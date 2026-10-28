@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bula Golf Check-in</title>
+<style>
+:root{--bg:#f4f7f4;--card:#fff;--ink:#16301f;--mut:#5b6e61;--line:#d5e0d7;--brand:#1b6b3a;--brand2:#e8f3ea;--warn:#b3261e;--amb:#a15c00}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1a13;--card:#17251c;--ink:#e6f1e8;--mut:#9bb0a1;--line:#2a3d30;--brand:#4cbf7a;--brand2:#1d3326;--warn:#ff8a80;--amb:#ffb74d}}
+*{box-sizing:border-box}
+body{margin:0;font:16px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+header{background:var(--brand);color:#fff;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+header h1{margin:0;font-size:20px}
+nav{display:flex;gap:4px;padding:8px 16px;flex-wrap:wrap}
+nav button{flex:1;min-width:110px}
+main{padding:0 16px 40px;max-width:900px;margin:auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}
+h2{margin:0 0 10px;font-size:18px}
+label{display:block;font-size:13px;color:var(--mut);margin:8px 0 3px}
+input,select,textarea{width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;font:inherit;background:var(--bg);color:var(--ink)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:560px){.row{grid-template-columns:1fr}}
+button{font:inherit;padding:10px 14px;border-radius:8px;border:1px solid var(--brand);background:var(--card);color:var(--brand);cursor:pointer}
+button.p{background:var(--brand);color:#fff}
+button.on{background:var(--brand2);font-weight:600}
+button.d{border-color:var(--warn);color:var(--warn)}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{padding:8px 12px;border:2px solid var(--line);border-radius:8px;cursor:pointer;background:var(--bg);min-width:70px;text-align:center}
+.chip.sel{border-color:var(--brand);background:var(--brand2);font-weight:600}
+.chip.off{opacity:.4;cursor:not-allowed;text-decoration:line-through}
+.chip small{display:block;color:var(--mut);font-weight:400}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+.tag{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px;background:var(--brand2);color:var(--brand)}
+.tag.o{background:#fff3e0;color:var(--amb)}
+.total{font-size:20px;font-weight:700;margin-top:10px}
+.hide{display:none}
+.mut{color:var(--mut);font-size:13px}
+</style>
+</head>
+<body>
+<header><h1>⛳ Bula Golf – Guest Check-in</h1><span id="today"></span></header>
+<nav>
+  <button data-t="checkin" class="on">Check-in</button>
+  <button data-t="course">On course</button>
+  <button data-t="log">Today's log</button>
+  <button data-t="setup">Carts &amp; clubs</button>
+</nav>
+<main>
+
+<section id="checkin">
+ <form id="f" class="card" autocomplete="off">
+  <h2>New check-in</h2>
+  <div class="row">
+   <div><label>Guest name *</label><input name="name" required></div>
+   <div><label>Phone / WhatsApp</label><input name="phone" type="tel"></div>
+   <div><label>Email</label><input name="email" type="email"></div>
+   <div><label>Country / Hotel</label><input name="origin"></div>
+   <div><label>Players in group *</label><input name="players" type="number" min="1" max="8" value="1" required></div>
+   <div><label>Tee time</label><input name="tee" type="time"></div>
+   <div><label>Holes</label><select name="holes"><option>18</option><option>9</option></select></div>
+   <div><label>Green fee</label><select name="fee"><option value="paid">Paid</option><option value="room">Charge to room</option><option value="unpaid">Collect at end</option></select></div>
+  </div>
+
+  <label>Golf cart (tap to assign)</label>
+  <div class="chips" id="cartChips"></div>
+  <div class="mut" id="cartHint"></div>
+
+  <label>Club hire</label>
+  <div class="chips" id="clubChips"></div>
+
+  <label>Notes</label><textarea name="notes" rows="2"></textarea>
+  <div class="total" id="total"></div>
+  <p><button class="p" type="submit">Check in guest</button> <button type="reset" id="reset">Clear</button></p>
+ </form>
+</section>
+
+<section id="course" class="hide"><div class="card"><h2>On course now</h2><div id="activeList"></div></div></section>
+
+<section id="log" class="hide"><div class="card"><h2>Today's check-ins</h2><div id="logList"></div>
+ <p><button id="csv">Download CSV (all days)</button></p></div></section>
+
+<section id="setup" class="hide">
+ <div class="card"><h2>Golf carts</h2><div id="cartAdmin"></div>
+  <div class="row"><input id="newCart" placeholder="Cart name/number e.g. 12"><input id="newCartFee" type="number" placeholder="Fee FJD" value="40"></div>
+  <p><button id="addCart">Add cart</button></p></div>
+ <div class="card"><h2>Club sets</h2><div id="clubAdmin"></div>
+  <div class="row"><input id="newClub" placeholder="Set name e.g. Men's RH #3"><input id="newClubFee" type="number" placeholder="Fee FJD" value="50"></div>
+  <p><button id="addClub">Add club set</button></p></div>
+ <div class="card"><h2>Data</h2><p class="mut">Data is saved on this device's browser. Use the CSV download for records or backup.</p>
+  <button class="d" id="wipe">Reset everything</button></div>
+</section>
+</main>
+
+<script>
+const KEY='bulagolf.v1';
+const today=()=>new Date().toISOString().slice(0,10);
+const defaults=()=>({
+  carts:Array.from({length:10},(_,i)=>({id:'C'+(i+1),name:'Cart '+(i+1),fee:40})),
+  clubs:[
+    {id:'K1',name:"Men's RH",fee:50},{id:'K2',name:"Men's RH",fee:50},{id:'K3',name:"Men's LH",fee:50},
+    {id:'K4',name:"Ladies RH",fee:50},{id:'K5',name:"Ladies RH",fee:50},{id:'K6',name:"Junior",fee:30}
+  ],
+  rounds:[]
+});
+let S;
+try{S=JSON.parse(localStorage.getItem(KEY))||defaults()}catch{S=defaults()}
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch{}};
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const active=()=>S.rounds.filter(r=>!r.returned);
+const usedCarts=()=>new Set(active().map(r=>r.cart).filter(Boolean));
+const usedClubs=()=>new Set(active().map(r=>r.club).filter(Boolean));
+const money=n=>'FJD '+Number(n||0).toFixed(2);
+let selCart=null,selClub=null;
+
+function tab(t){
+  document.querySelectorAll('main>section').forEach(s=>s.classList.toggle('hide',s.id!==t));
+  document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+  render();
+}
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>tab(b.dataset.t));
+
+function chips(el,items,used,sel,onPick,noneLabel){
+  el.innerHTML='';
+  if(noneLabel){
+    const n=document.createElement('div');n.className='chip'+(sel===null?' sel':'');n.textContent=noneLabel;
+    n.onclick=()=>onPick(null);el.append(n);
+  }
+  items.forEach(it=>{
+    const d=document.createElement('div');
+    const u=used.has(it.id);
+    d.className='chip'+(u?' off':'')+(sel===it.id?' sel':'');
+    d.innerHTML=esc(it.name)+'<small>'+money(it.fee)+(u?' · in use':'')+'</small>';
+    if(!u)d.onclick=()=>onPick(it.id);
+    el.append(d);
+  });
+}
+function renderCheckin(){
+  chips($('#cartChips'),S.carts,usedCarts(),selCart,id=>{selCart=id;renderCheckin()},'No cart (walking)');
+  chips($('#clubChips'),S.clubs,usedClubs(),selClub,id=>{selClub=id;renderCheckin()},'Own clubs');
+  const free=S.carts.length-usedCarts().size;
+  $('#cartHint').textContent=free+' of '+S.carts.length+' carts free';
+  const c=S.carts.find(x=>x.id===selCart),k=S.clubs.find(x=>x.id===selClub);
+  $('#total').textContent='Cart + club hire: '+money((c?.fee||0)+(k?.fee||0));
+}
+$('#f').addEventListener('input',()=>{});
+$('#reset').onclick=()=>setTimeout(()=>{selCart=selClub=null;renderCheckin()});
+$('#f').onsubmit=e=>{
+  e.preventDefault();
+  const fd=Object.fromEntries(new FormData(e.target));
+  const c=S.carts.find(x=>x.id===selCart),k=S.clubs.find(x=>x.id===selClub);
+  S.rounds.push({
+    id:'R'+Date.now(),date:today(),time:new Date().toTimeString().slice(0,5),
+    ...fd,players:+fd.players,
+    cart:selCart,cartName:c?.name||'',club:selClub,clubName:k?k.name:'',
+    hireFee:(c?.fee||0)+(k?.fee||0),returned:null
+  });
+  save();e.target.reset();selCart=selClub=null;renderCheckin();
+  alert('Checked in. '+(c?c.name:'No cart')+(k?' · Clubs: '+k.name:''));
+};
+
+function renderActive(){
+  const a=active();
+  $('#activeList').innerHTML=a.length?'<table><tr><th>Guest</th><th>Tee</th><th>Cart</th><th>Clubs</th><th></th></tr>'+
+   a.map(r=>`<tr><td>${esc(r.name)}<div class="mut">${r.players} player(s) · ${r.holes}h</div></td><td>${esc(r.tee||r.time)}</td>
+   <td>${esc(r.cartName)||'—'}</td><td>${esc(r.clubName)||'Own'}</td>
+   <td><button data-ret="${r.id}">Returned</button></td></tr>`).join('')+'</table>':'<p class="mut">Nobody on the course.</p>';
+  document.querySelectorAll('[data-ret]').forEach(b=>b.onclick=()=>{
+    const r=S.rounds.find(x=>x.id===b.dataset.ret);r.returned=new Date().toTimeString().slice(0,5);save();render();
+  });
+}
+function renderLog(){
+  const l=S.rounds.filter(r=>r.date===today());
+  const tot=l.reduce((s,r)=>s+r.hireFee,0);
+  $('#logList').innerHTML=l.length?'<table><tr><th>Time</th><th>Guest</th><th>Cart</th><th>Clubs</th><th>Hire</th><th></th></tr>'+
+   l.map(r=>`<tr><td>${r.time}</td><td>${esc(r.name)}<div class="mut">${esc(r.phone)} ${esc(r.origin)}</div></td><td>${esc(r.cartName)||'—'}</td>
+   <td>${esc(r.clubName)||'Own'}</td><td>${money(r.hireFee)}</td><td><span class="tag ${r.returned?'':'o'}">${r.returned?'Back '+r.returned:'Out'}</span></td></tr>`).join('')+
+   `</table><div class="total">Hire total today: ${money(tot)}</div>`:'<p class="mut">No check-ins yet today.</p>';
+}
+function adminList(el,key,usedSet){
+  el.innerHTML='<table>'+S[key].map(i=>`<tr><td>${esc(i.name)}</td><td>${money(i.fee)}</td>
+   <td>${usedSet.has(i.id)?'<span class="tag o">in use</span>':`<button class="d" data-del="${key}:${i.id}">Remove</button>`}</td></tr>`).join('')+'</table>';
+}
+function renderSetup(){
+  adminList($('#cartAdmin'),'carts',usedCarts());adminList($('#clubAdmin'),'clubs',usedClubs());
+  document.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{
+    const [k,id]=b.dataset.del.split(':');S[k]=S[k].filter(x=>x.id!==id);save();render();
+  });
+}
+function add(key,nameEl,feeEl,prefix){
+  const n=$(nameEl).value.trim();if(!n)return;
+  S[key].push({id:prefix+Date.now(),name:n,fee:+$(feeEl).value||0});$(nameEl).value='';save();render();
+}
+$('#addCart').onclick=()=>add('carts','#newCart','#newCartFee','C');
+$('#addClub').onclick=()=>add('clubs','#newClub','#newClubFee','K');
+$('#wipe').onclick=()=>{if(confirm('Delete ALL data and reset?')){S=defaults();save();render()}};
+$('#csv').onclick=()=>{
+  const cols=['date','time','name','phone','email','origin','players','tee','holes','fee','cartName','clubName','hireFee','returned','notes'];
+  const q=v=>'"'+String(v??'').replace(/"/g,'""')+'"';
+  const csv=[cols.join(',')].concat(S.rounds.map(r=>cols.map(c=>q(r[c])).join(','))).join('\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download='bula-golf-'+today()+'.csv';a.click();
+};
+function render(){renderCheckin();renderActive();renderLog();renderSetup()}
+$('#today').textContent=new Date().toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'long'});
+render();
+</script>
+</body>
+</html>
