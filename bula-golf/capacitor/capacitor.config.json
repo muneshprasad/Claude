@@ -1,0 +1,7 @@
+{
+  "appId": "fj.bulagolf.checkin",
+  "appName": "Bula Golf",
+  "webDir": "../public",
+  "server": { "url": "https://YOUR-DOMAIN/golf/", "cleartext": false },
+  "android": { "allowMixedContent": false }
+}

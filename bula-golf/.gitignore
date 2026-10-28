@@ -1,0 +1,4 @@
+public/api/config.php
+node_modules/
+capacitor/android/
+*.log
