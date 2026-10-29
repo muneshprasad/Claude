@@ -296,12 +296,14 @@ async function returns() {
 function returnDialog(c) {
   const m = document.createElement('div'); m.className = 'modal';
   m.innerHTML = `<div><h2>Return: ${esc(c.guest)}</h2><p>${esc(c.cart_name || 'No cart')} · ${esc(c.clubs_name || 'No clubs')}</p>${c.items ? `<p>${esc(c.items)}</p>` : ''}${c.bags ? `<p class="mut">Bag ${esc(c.bags)}</p>` : ''}
+    <label for="rn">Notes <span style="text-transform:none;letter-spacing:0;font-weight:400">(optional)</span></label><textarea id="rn" rows="2" maxlength="500" placeholder="e.g. left early, low battery, lost a towel…"></textarea>
     <button class="p" id="ok">✔ Returned – undamaged</button><button class="d" id="dm">⚠ Damaged</button><button class="d" id="wr">🚫 Raise patron warning</button><button id="cx">Cancel</button></div>`;
   document.body.append(m);
   $('#cx', m).onclick = () => m.remove();
-  $('#ok', m).onclick = guard(async () => { await api('checkins/return', { method: 'POST', body: { id: c.id, condition: 'ok' } }); m.remove(); toast('Returned'); returns(); });
+  $('#ok', m).onclick = guard(async () => { await api('checkins/return', { method: 'POST', body: { id: c.id, condition: 'ok', note: $('#rn', m).value } }); m.remove(); toast('Returned'); returns(); });
   const issue = (cond, title) => {
-    m.firstElementChild.innerHTML = `<h2>${title}</h2><label>What happened? *</label><textarea id="nt" rows="3"></textarea>
+    const typed = $('#rn', m)?.value || ''; // anything already typed carries over
+    m.firstElementChild.innerHTML = `<h2>${title}</h2><label>What happened? *</label><textarea id="nt" rows="3">${esc(typed)}</textarea>
       ${cond === 'damaged' ? '<label>Photo of damage</label><input id="ph" type="file" accept="image/*" capture="environment">' : ''}
       <button class="d" id="sv">Save</button><button id="cx2">Cancel</button>`;
     $('#cx2', m).onclick = () => m.remove();
@@ -328,7 +330,7 @@ async function history(date) {
   const tot = checkins.reduce((s, c) => s + +c.hire_fee, 0);
   view(`<div class="card"><h2>Check-ins</h2>${can('history') ? `<input type="date" id="d" value="${date}" style="max-width:220px">` : '<p class="mut">Today</p>'}
    ${checkins.length ? `<table><tr><th>Time</th><th>Guest</th><th>Cart</th><th>Clubs</th><th>Hire</th><th></th></tr>${checkins.map(c => `<tr class="${can('history') ? 'click' : ''}" data-id="${c.id}"><td>${hm(c.checked_in_at)}</td><td><b>${esc(c.guest)}</b>${c.golfers > 1 ? ' +' + (c.golfers - 1) : ''}${c.fee_status === 'member' ? ' <span class="tag">Member</span>' : ''}<div class="mut">${esc(c.mobile)} ${esc(c.hotel || '')}</div></td><td>${esc(c.cart_name) || '—'}</td><td>${hireCell(c)}</td><td>${money(c.hire_fee)}</td>
-   <td><span class="tag ${c.returned_at ? (c.return_condition === 'ok' ? '' : 'r') : 'o'}">${c.returned_at ? (c.return_condition === 'ok' ? 'Back ' + hm(c.returned_at) : c.return_condition) : 'Out'}</span></td></tr>`).join('')}</table><h3>Hire total: ${money(tot)}</h3>` : '<p class="mut">No check-ins.</p>'}</div>`, 'Check-ins', home);
+   <td><span class="tag ${c.returned_at ? (c.return_condition === 'ok' ? '' : 'r') : 'o'}">${c.returned_at ? (c.return_condition === 'ok' ? 'Back ' + hm(c.returned_at) : c.return_condition) : 'Out'}</span>${c.return_note ? `<div class="mut" style="max-width:220px">📝 ${esc(c.return_note)}</div>` : ''}</td></tr>`).join('')}</table><h3>Hire total: ${money(tot)}</h3>` : '<p class="mut">No check-ins.</p>'}</div>`, 'Check-ins', home);
   if (can('history')) { $('#d').onchange = e => history(e.target.value); document.querySelectorAll('tr.click').forEach(tr => tr.onclick = () => detail(tr.dataset.id, () => history(date))); }
 }
 const detail = guard(async (id, back) => {
