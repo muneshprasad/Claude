@@ -10,6 +10,10 @@ CREATE TABLE IF NOT EXISTS courses (
   tennis TINYINT(1) NOT NULL DEFAULT 0,   -- course hires tennis racquets / tennis shoes
   shoes TINYINT(1) NOT NULL DEFAULT 0,    -- course hires golf shoes
   room_charge TINYINT(1) NOT NULL DEFAULT 0,   -- guests can have fees charged to their hotel room (head office switches this on)
+  t9 SMALLINT NOT NULL DEFAULT 135,        -- expected minutes out for 9 holes (carts-out animation)
+  t18 SMALLINT NOT NULL DEFAULT 270,       -- expected minutes out for 18 holes
+  late9 SMALLINT NOT NULL DEFAULT 210,     -- a 9-hole cart still out after this many minutes is overdue
+  late18 SMALLINT NOT NULL DEFAULT 360,
   active TINYINT(1) NOT NULL DEFAULT 1,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

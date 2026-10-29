@@ -267,3 +267,18 @@ input,textarea,.terms{-webkit-user-select:text;user-select:text}
 @media(prefers-reduced-motion:reduce){.cart-svg,.cart-svg .cw path,.cartb.enter,.cartb.late:before,.chip.late{animation:none!important}.cartb{transition:none}}
 @media(max-width:560px){.cartb{width:46px}.cart-svg{width:36px;height:24px}.cartb b{font-size:15px}.cartb small{font-size:9.5px}}
 header>div{flex-wrap:wrap;justify-content:flex-end}
+
+/* tappable pool chips + their list */
+button.chip{min-height:44px;cursor:pointer;font-family:var(--sans);letter-spacing:0}
+button.chip:active{transform:scale(.97)}
+.nums{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+.nums span{background:var(--gold2);border:1px solid var(--gold);border-radius:12px;padding:4px 14px;font-family:var(--serif);font-size:26px;font-weight:600;color:var(--ink)}
+.nums.late span{background:var(--warn2);border-color:var(--warn);color:var(--warn)}
+
+/* home grid: an odd last tile stretches across the row so the layout is always even */
+.home>.big:last-child:nth-child(even){grid-column:1/-1}
+/* cart status board */
+.fleet.big{grid-template-columns:repeat(auto-fill,minmax(76px,1fr));gap:10px}
+.fleet.big button.fl{all:unset;box-sizing:border-box;height:72px;border-radius:14px;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;font-weight:700;font-size:22px;border:2px solid transparent;font-family:var(--serif)}
+.fleet.big button.fl small{font-family:var(--sans);font-size:11px;font-weight:600;text-transform:capitalize;opacity:.85}
+.fleet.big button.fl:active{transform:scale(.96)}

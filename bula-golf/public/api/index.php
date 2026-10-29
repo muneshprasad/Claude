@@ -23,7 +23,7 @@ try {
         }
         q('DELETE FROM login_attempts WHERE username=?', [$u]);
         $me = ['id' => (int)$row['id'], 'name' => $row['name'], 'role' => norm_role((string)$row['role'])];
-        $courses = q('SELECT id,name,full_name,tennis,shoes,room_charge,(logo IS NOT NULL) AS has_logo,UNIX_TIMESTAMP(logo_at) AS logo_v FROM courses WHERE active=1 ORDER BY id')->fetchAll();
+        $courses = q('SELECT id,name,full_name,tennis,shoes,room_charge,t9,t18,late9,late18,(logo IS NOT NULL) AS has_logo,UNIX_TIMESTAMP(logo_at) AS logo_v FROM courses WHERE active=1 ORDER BY id')->fetchAll();
         $meOut = $me + ['course_id' => $row['course_id'] === null ? null : (int)$row['course_id'], 'perms' => my_perms($me)];
         audit((int)$row['id'], 'login');
         if (!empty($b['app'])) { // mobile app: issue a token instead of a cookie session
@@ -46,7 +46,7 @@ try {
         $c = cfg();
         out(['user' => $u ? $u + ['course_id' => user_course_id($u), 'perms' => my_perms($u)] : null, 'currency' => $c['currency'], 'course' => $c['course_name'],
               // course names and logos are public (the sign-in screen shows them); the hire switches only go to signed-in users
-              'courses' => q('SELECT id,name,full_name,' . ($u ? 'tennis,shoes,room_charge,' : '') . '(logo IS NOT NULL) AS has_logo,UNIX_TIMESTAMP(logo_at) AS logo_v FROM courses WHERE active=1 ORDER BY id')->fetchAll()]);
+              'courses' => q('SELECT id,name,full_name,' . ($u ? 'tennis,shoes,room_charge,t9,t18,late9,late18,' : '') . '(logo IS NOT NULL) AS has_logo,UNIX_TIMESTAMP(logo_at) AS logo_v FROM courses WHERE active=1 ORDER BY id')->fetchAll()]);
     }
 
     // ---------- guests ----------
@@ -136,6 +136,22 @@ try {
         out(['members' => q("SELECT id,member_no,first_name,last_name,mobile,email,starts_on,expires_on FROM members WHERE $w ORDER BY last_name, first_name LIMIT 300", $p)->fetchAll(),
              'counts' => q('SELECT COUNT(*) total, COALESCE(SUM(expires_on IS NULL OR expires_on >= CURDATE()),0) active, COALESCE(SUM(expires_on < CURDATE()),0) expired,
                             COALESCE(SUM(expires_on BETWEEN CURDATE() AND (CURDATE() + INTERVAL 30 DAY)),0) expiring FROM members WHERE course_id=?', [$cid])->fetch()]);
+    }
+    case 'members/check': { // counter lookup for any signed-in user: status only, no contact details
+        $u = require_login();
+        $s = trim((string)($_GET['q'] ?? ''));
+        if (mb_strlen($s) < 2) out(['members' => []]);
+        $like = '%' . str_replace(['%', '_'], ['\%', '\_'], $s) . '%';
+        out(['members' => q("SELECT first_name, last_name, member_no, expires_on, (expires_on IS NOT NULL AND expires_on < CURDATE()) AS expired, DATEDIFF(expires_on, CURDATE()) AS days_left
+                             FROM members WHERE course_id=? AND (CONCAT(first_name,' ',last_name) LIKE ? OR member_no LIKE ? OR mobile LIKE ?) ORDER BY last_name, first_name LIMIT 8",
+                            [course_id($u), $like, $like, $like])->fetchAll()]);
+    }
+    case 'assets/maintenance': { // a supervisor marks a cart or hire item in or out of maintenance without opening the full fleet editor
+        $u = require_perm('fleet');
+        $b = body();
+        q('UPDATE assets SET maintenance=? WHERE id=? AND course_id=?', [empty($b['maintenance']) ? 0 : 1, (int)($b['id'] ?? 0), course_id($u)]);
+        audit($u['id'], 'asset_maintenance', 'id ' . (int)($b['id'] ?? 0) . (empty($b['maintenance']) ? ' in service' : ' maintenance'));
+        out(['ok' => true]);
     }
     case 'members/import': { // rows parsed in the browser from the course's CSV; "replace" swaps the whole list
         $u = require_perm('members');
@@ -374,6 +390,17 @@ try {
         }
         out(['courses' => $rows]);
     }
+    case 'course/timing': { // a course admin sets their own course's round times (minutes); head office edits whichever course is selected
+        $u = require_course_admin();
+        $b = body();
+        $t9 = (int)($b['t9'] ?? 0); $t18 = (int)($b['t18'] ?? 0); $l9 = (int)($b['late9'] ?? 0); $l18 = (int)($b['late18'] ?? 0);
+        if ($t9 < 20 || $t9 > 400 || $t18 < 40 || $t18 > 720 || $l9 < 20 || $l9 > 600 || $l18 < 40 || $l18 > 900) fail(422, 'Enter all four times in minutes (9 holes 20-400, 18 holes 40-720, overdue up to 600 / 900)');
+        if ($l9 < $t9 || $l18 < $t18) fail(422, 'The overdue time must not be shorter than the expected time');
+        $cid = course_id($u);
+        q('UPDATE courses SET t9=?, t18=?, late9=?, late18=? WHERE id=?', [$t9, $t18, $l9, $l18, $cid]);
+        audit($u['id'], 'course_timing', "course $cid $t9/$t18/$l9/$l18");
+        out(['ok' => true]);
+    }
     case 'course/logo': { // public on purpose: the logo is shown in the app header
         $d = (string)q('SELECT logo FROM courses WHERE id=?', [(int)($_GET['id'] ?? 0)])->fetchColumn();
         if (!preg_match('#^data:image/(png|jpeg|webp);base64,#', $d, $mt)) { http_response_code(404); exit; }
@@ -596,6 +623,7 @@ function report_run(string $type, int $cid, string $from, string $to, string $sc
     }
 
     if ($type === 'rounds') {
+        $tm = q('SELECT late9, late18 FROM courses WHERE id=?', [$cid])->fetch() ?: ['late9' => 210, 'late18' => 360]; // this course's overdue limits (minutes)
         $days = ['', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
         $wk = q("SELECT DAYOFWEEK(c.checked_in_at) w, COUNT(*) rounds, SUM($golfers) golfers, COUNT(DISTINCT DATE(c.checked_in_at)) days FROM checkins c WHERE $W GROUP BY DAYOFWEEK(c.checked_in_at)", $P)->fetchAll();
         usort($wk, fn($a, $b) => (($a['w'] + 5) % 7) <=> (($b['w'] + 5) % 7)); // Monday first
@@ -604,9 +632,9 @@ function report_run(string $type, int $cid, string $from, string $to, string $sc
         $hr = q("SELECT HOUR(c.checked_in_at) h, COUNT(*) rounds, SUM($golfers) golfers FROM checkins c WHERE $W GROUP BY HOUR(c.checked_in_at) ORDER BY h", $P)->fetchAll();
         $sec('By hour of check-in', [['Hour', 'text'], ['Check-ins', 'int'], ['Golfers', 'int']], array_map(fn($r) => [sprintf('%02d:00', $r['h']), (int)$r['rounds'], (int)$r['golfers']], $hr));
         $du = q("SELECT c.holes, COUNT(*) n, AVG(TIMESTAMPDIFF(MINUTE, c.checked_in_at, c.returned_at)) avg_min,
-                 SUM(TIMESTAMPDIFF(MINUTE, c.checked_in_at, c.returned_at) > IF(c.holes=9, 210, 360)) late
+                 SUM(TIMESTAMPDIFF(MINUTE, c.checked_in_at, c.returned_at) > IF(c.holes=9, {$tm['late9']}, {$tm['late18']})) late
                  FROM checkins c WHERE $W AND c.returned_at IS NOT NULL GROUP BY c.holes ORDER BY c.holes", $P)->fetchAll();
-        $sec('Time out on the course (cart and clubs returned)', [['Holes', 'int'], ['Returned check-ins', 'int'], ['Average time out', 'mins'], ['Slow rounds (over 3.5h for 9, 6h for 18)', 'int']],
+        $sec('Time out on the course (cart and clubs returned)', [['Holes', 'int'], ['Returned check-ins', 'int'], ['Average time out', 'mins'], ['Overdue rounds (over ' . $tm['late9'] . ' min for 9 holes, ' . $tm['late18'] . ' for 18)', 'int']],
              array_map(fn($r) => [(int)$r['holes'], (int)$r['n'], (int)round((float)$r['avg_min']), (int)$r['late']], $du));
         $tot = q("SELECT COUNT(*) rounds, COALESCE(SUM($golfers),0) golfers, COALESCE(SUM(c.holes=9),0) nine FROM checkins c WHERE $W", $P)->fetch();
         $summary = [['Check-ins', (int)$tot['rounds'], 'int'], ['Golfers', (int)$tot['golfers'], 'int'], ['Golfers per check-in', $tot['rounds'] ? round($tot['golfers'] / $tot['rounds'], 2) : 0, 'text'], ['9-hole share', $pct($tot['nine'], $tot['rounds']), 'pct']];

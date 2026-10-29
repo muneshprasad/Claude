@@ -66,6 +66,8 @@ const ICON = {
   ret: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>',
   list: '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4v2h6V4M9 11h6M9 15h6"/>',
   doc: '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 13h6M10 17h6"/>',
+  users: '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17" cy="9" r="2.5"/><path d="M17 14c2.5 0 4.5 2 4.5 4.5"/>',
+  cart: '<rect x="5" y="9" width="14" height="6" rx="2"/><path d="M7 9V4h10l1.5 5"/><circle cx="8" cy="18" r="2"/><circle cx="16" cy="18" r="2"/>',
   chart: '<path d="M5 20v-9M12 20V5M19 20v-7"/><path d="M3 20h18"/>',
   gear: '<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/>',
 };
@@ -99,6 +101,8 @@ async function home() {
    <button class="big wide" id="new">${ico('plus')}<div>New check-in<small>${free} of ${carts.length} carts available</small></div></button>
    <button class="big alt" id="ret">${ico('ret')}<div>Return cart / clubs<small>${act.checkins.length} on the course now</small></div></button>
    <button class="big alt" id="log">${ico('list')}<div>Today's check-ins</div></button>
+   <button class="big alt" id="mem">${ico('users')}<div>Member check<small>is this golfer a current member?</small></div></button>
+   ${can('fleet') ? `<button class="big alt" id="cst">${ico('cart')}<div>Cart status<small>mark a cart in or out of service</small></div></button>` : ''}
    ${can('reports') ? `<button class="big alt" id="rep">${ico('doc')}<div>Reports<small>cart usage, cash-up, members, trends</small></div></button>` : ''}${can('dashboard') || can('history') ? `<button class="big alt" id="dash">${ico('chart')}<div>${can('dashboard') ? 'Dashboard &amp; history' : 'History'}</div></button>` : ''}${canSettings() ? `<button class="big alt" id="set">${ico('gear')}<div>Settings<small>${isCourseAdmin() ? 'fleet, members, team, access, export' : 'the areas your admin has opened to you'}</small></div></button>` : ''}</div>
    <div id="homepool" style="margin-top:22px">${cartPool({ fleet: ast.assets, out: act.checkins })}</div>`);
   setTimer(async () => { const [a2, s2] = await Promise.all([api('checkins/active'), api('assets')]); const el = $('#homepool'); if (el) el.innerHTML = cartPool({ fleet: s2.assets, out: a2.checkins }); }, 30000); // keep the carts-out panel live
@@ -106,6 +110,8 @@ async function home() {
   if ($('#dash')) $('#dash').onclick = () => can('dashboard') ? dashboard() : history(new Date().toLocaleDateString('en-CA'));
   if ($('#set')) $('#set').onclick = () => settings();
   if ($('#rep')) $('#rep').onclick = () => reportsScreen();
+  $('#mem').onclick = memberCheck;
+  if ($('#cst')) $('#cst').onclick = () => cartBoard();
 }
 
 /* ---------------- check-in wizard ---------------- */
@@ -372,29 +378,53 @@ async function overviewHtml() {
 }
 
 /* ---------------- live cart pool: carts out on the course ---------------- */
-const POOL = { seen: new Set() }; // carts already shown, so only newly-out carts slide in on a refresh
+const POOL = { seen: new Set(), last: { out: [], late: [], avail: [], away: [] } }; // seen: only newly-out carts slide in; last: what the chips open
 const CART_SVG = '<svg class="cart-svg" viewBox="0 0 52 34" aria-hidden="true"><rect class="cbag" x="2" y="9" width="5" height="14" rx="2"/><path class="cr" d="M12 14V5h27l3 9"/><rect class="cb" x="8" y="13" width="36" height="10" rx="4"/><g class="cw"><circle cx="16" cy="27" r="5"/><path d="M16 22v10M11 27h10"/></g><g class="cw"><circle cx="38" cy="27" r="5"/><path d="M38 22v10M33 27h10"/></g></svg>';
+/** Round times for a course, in minutes (set by its admin in Settings > Round times). */
+const timing = (id = CID) => { const c = COURSES.find(x => x.id == id) || {}; return { t9: +c.t9 || 135, t18: +c.t18 || 270, late9: +c.late9 || 210, late18: +c.late18 || 360 }; };
+const cartNo = n => String(n || '').replace(/^cart\s*/i, '');
 
-/** Estimated position from time since check-in (a 9-hole round is expected to take about 2h15, 18 holes about 4h30). Real GPS positions can replace this later. */
+/** Estimated position from time since check-in against the course's expected round time. Real GPS positions can replace this later. */
 function cartPool(d) {
-  const carts = d.fleet.filter(a => a.kind === 'cart');
-  const out = d.out.filter(c => c.cart_name);
-  const avail = carts.filter(a => a.status === 'available').length, away = carts.filter(a => !['available', 'out'].includes(a.status)).length;
-  const exp = c => +c.holes === 9 ? 135 : 270, lateAt = c => +c.holes === 9 ? 210 : 360;
-  const items = out.map(c => { const m = mins(c.checked_in_at); return { c, m, p: Math.min(1, m / exp(c)), late: m > lateAt(c) }; }).sort((a, b) => a.p - b.p);
-  const lanes = items.length > 18 ? 4 : 3, late = items.filter(i => i.late).length;
+  const tm = timing(), carts = d.fleet.filter(a => a.kind === 'cart'), out = d.out.filter(c => c.cart_name);
+  const avail = carts.filter(a => a.status === 'available'), away = carts.filter(a => !['available', 'out'].includes(a.status));
+  const exp = c => +c.holes === 9 ? tm.t9 : tm.t18, lateAt = c => +c.holes === 9 ? tm.late9 : tm.late18;
+  const items = out.map(c => { const m = mins(c.checked_in_at); return { c, m, p: Math.min(1, m / exp(c)), late: m > lateAt(c), over: Math.max(0, m - lateAt(c)) }; }).sort((a, b) => a.p - b.p);
+  const lateItems = items.filter(i => i.late).sort((a, b) => b.over - a.over);
+  POOL.last = { out: [...items].sort((a, b) => b.m - a.m), late: lateItems, avail, away };
+  const lanes = items.length > 18 ? 4 : 3;
   const badges = items.map((it, i) => {
     const x = 5 + it.p * 88, isNew = !POOL.seen.has(it.c.id); POOL.seen.add(it.c.id);
-    const num = esc(it.c.cart_name.replace(/^cart\s*/i, '')), who = `${it.c.guest}${it.c.golfers > 1 ? ' +' + (it.c.golfers - 1) : ''}`;
-    return `<div class="cartb ${it.late ? 'late' : ''} ${isNew ? 'enter' : ''}" style="--x:${x}%;left:${x}%;top:${36 + (i % lanes) * 50}px;--d:${(i % 6) * 0.3}s" title="${esc(it.c.cart_name)} · ${esc(who)} · out ${dur(it.m)}${it.late ? ' · overdue' : ''}">${CART_SVG}<b>${num}</b><small>${dur(it.m)}</small></div>`;
+    const who = `${it.c.guest}${it.c.golfers > 1 ? ' +' + (it.c.golfers - 1) : ''}`;
+    return `<div class="cartb ${it.late ? 'late' : ''} ${isNew ? 'enter' : ''}" style="--x:${x}%;left:${x}%;top:${36 + (i % lanes) * 50}px;--d:${(i % 6) * 0.3}s" title="${esc(it.c.cart_name)} · ${esc(who)} · out ${dur(it.m)}${it.late ? ' · overdue' : ''}">${CART_SVG}<b>${esc(cartNo(it.c.cart_name))}</b><small>${dur(it.m)}</small></div>`;
   }).join('');
   const dots = Array.from({ length: 18 }, (_, h) => `<i class="${(h + 1) % 3 === 0 || h === 0 ? 'lab' : ''}"><span>${h + 1}</span></i>`).join('');
+  const chip = (k, cls, n, label) => `<button type="button" class="chip ${cls}" data-pool="${k}" aria-label="Show the ${label} carts"><b>${n}</b> ${label}</button>`;
   return `<div class="card pool"><div class="pool-head"><h2>Carts on the course <span class="mut">right now</span></h2>
-    <div class="pool-chips"><span class="chip out"><b>${out.length}</b> out</span><span class="chip ok"><b>${avail}</b> in the shed</span>${away ? `<span class="chip off"><b>${away}</b> unavailable</span>` : ''}${late ? `<span class="chip late"><b>${late}</b> overdue</span>` : ''}</div></div>
+    <div class="pool-chips">${chip('out', 'out', out.length, 'out')}${chip('avail', 'ok', avail.length, 'in the shed')}${away.length ? chip('away', 'off', away.length, 'unavailable') : ''}${lateItems.length ? chip('late', 'late', lateItems.length, 'overdue') : ''}</div></div>
     <div class="track" style="height:${lanes * 50 + 80}px"><div class="tflag l"><b>Clubhouse</b><small>start</small></div><div class="tflag r"><b>Clubhouse</b><small>finish</small></div><div class="lane-line"></div>
       ${out.length ? badges : '<div class="allhome">✔ Every cart is home</div>'}<div class="holes">${dots}</div></div>
-    <p class="mut" style="margin:4px 0 0;font-size:13px">Estimated position from check-in time (nine holes about 2¼ hours, eighteen about 4½). Amber means overdue. Tap a cart to see who has it.</p></div>`;
+    <p class="mut" style="margin:4px 0 0;font-size:13px">Estimated position from check-in time: nine holes about ${dur(tm.t9)}, eighteen about ${dur(tm.t18)}. Red means overdue (after ${dur(tm.late9)} / ${dur(tm.late18)}). Tap a number above for the cart list.</p></div>`;
 }
+
+/** The list behind a chip: cart numbers first, then who has them and for how long. */
+function poolDialog(kind) {
+  const L = POOL.last;
+  const T = { late: ['Overdue carts', L.late], out: ['Carts on the course', L.out], avail: ['Carts in the shed', L.avail], away: ['Carts unavailable', L.away] }[kind];
+  if (!T) return;
+  const rows = T[1], isGuest = kind === 'late' || kind === 'out';
+  const nums = rows.map(r => isGuest ? cartNo(r.c.cart_name) : cartNo(r.name));
+  const m = document.createElement('div'); m.className = 'modal';
+  m.innerHTML = `<div><h2>${T[0]} <span class="mut">(${rows.length})</span></h2>
+    ${rows.length ? `<div class="nums ${kind === 'late' ? 'late' : ''}">${nums.map((n, i) => `<span>${esc(n)}</span>`).join('')}</div>` : '<p class="mut">None right now.</p>'}
+    ${isGuest && rows.length ? `<table><tr><th>Cart</th><th>Guest</th><th>Out for</th></tr>${rows.map(r => `<tr><td><b>${esc(cartNo(r.c.cart_name))}</b></td><td>${esc(r.c.guest)}${r.c.golfers > 1 ? ' +' + (r.c.golfers - 1) : ''}<div class="mut">${r.c.holes} holes${r.c.clubs_name ? ' · ' + esc(r.c.clubs_name) : ''}</div></td><td>${dur(r.m)}${r.late ? `<div style="color:var(--warn);font-size:13px;font-weight:600">${dur(r.over)} overdue</div>` : ''}</td></tr>`).join('')}</table>` : ''}
+    ${kind === 'away' && rows.length ? `<table><tr><th>Cart</th><th>Status</th></tr>${rows.map(a => `<tr><td><b>${esc(cartNo(a.name))}</b></td><td>${esc(String(a.status).replace('_', ' '))}</td></tr>`).join('')}</table>` : ''}
+    <button type="button" id="pc">Close</button></div>`;
+  document.body.append(m);
+  const close = () => m.remove();
+  $('#pc', m).onclick = close; m.onclick = e => { if (e.target === m) close(); };
+}
+document.addEventListener('click', e => { const b = e.target.closest('[data-pool]'); if (b) poolDialog(b.dataset.pool); });
 
 async function courseHtml() {
   const d = await api('dashboard', { params: { range: DASH.range } });
@@ -404,7 +434,7 @@ async function courseHtml() {
   const byDay = Object.fromEntries(d.days.map(x => [x.d, x])), byHour = Object.fromEntries(d.hours.map(x => [+x.h, +x.n]));
   const holes = Object.fromEntries(d.mix.holes.map(x => [x.k, +x.n])), tot = (+holes[9] || 0) + (+holes[18] || 0);
   const fee = Object.fromEntries(d.mix.fee.map(x => [x.k, x]));
-  const late = c => mins(c.checked_in_at) > (+c.holes === 9 ? 210 : 360);
+  const late = c => mins(c.checked_in_at) > (+c.holes === 9 ? timing().late9 : timing().late18);
   const tiles = list => list.map(a => `<div class="fl ${a.status}" title="${esc(a.name)} · ${FL[a.status] || a.status}${a.guest ? ' · ' + esc(a.guest) : ''}">${esc(a.name.replace(/^(cart|set|shoes?|racquet)\s*/i, ''))}${a.status === 'out' ? `<small>${dur(mins(a.since))}</small>` : a.gps_battery != null && a.gps_battery < 25 ? '<small>🪫</small>' : ''}</div>`).join('') || '<span class="mut">None set up</span>';
   const legend = list => Object.keys(FL).map(s => [s, list.filter(a => a.status === s).length]).filter(([, n]) => n).map(([s, n]) => `<span class="lg"><i class="fl ${s}"></i>${FL[s]} ${n}</span>`).join('');
   return `${cartPool(d)}<div class="seg" role="group">${[[1, 'Today'], [7, '7 days'], [30, '30 days']].map(([v, l]) => `<button class="${r === v ? 'on' : ''}" data-range="${v}">${l}</button>`).join('')}<span class="mut">Updated ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · refreshes every 30s</span></div>
@@ -458,12 +488,12 @@ const dashboard = guard(async tab => {
 
 /* ---------------- settings ---------------- */
 function settings(tab) {
-  const TABS = [...(can('fleet') ? [['fleet', 'Carts & clubs']] : []), ...(can('members') ? [['members', 'Members']] : []), ...(isCourseAdmin() ? [['users', 'Team'], ['access', 'Access']] : []), ...(isAdmin() ? [['terms', 'Terms'], ['courses', 'Courses']] : []), ...(can('export') ? [['export', 'Export']] : [])];
+  const TABS = [...(can('fleet') ? [['fleet', 'Carts & clubs']] : []), ...(can('members') ? [['members', 'Members']] : []), ...(isCourseAdmin() ? [['users', 'Team'], ['access', 'Access'], ['timing', 'Round times']] : []), ...(isAdmin() ? [['terms', 'Terms'], ['courses', 'Courses']] : []), ...(can('export') ? [['export', 'Export']] : [])];
   if (!TABS.length) return toast('Nothing in Settings is open to you. Ask your admin.', true);
   if (!TABS.some(([k]) => k === tab)) tab = TABS[0][0];
   view(`<div class="tabs">${TABS.map(([k, l]) => `<button class="${tab === k ? 'on' : ''}" data-t="${k}">${l}</button>`).join('')}</div><div id="pane"></div>`, 'Settings', home);
   document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => settings(b.dataset.t));
-  guard(async () => ({ fleet, terms: termsPane, users: usersPane, access: accessPane, courses: coursesPane, members: membersPane, export: exportPane })[tab]())();
+  guard(async () => ({ fleet, terms: termsPane, users: usersPane, access: accessPane, timing: timingPane, courses: coursesPane, members: membersPane, export: exportPane })[tab]())();
 }
 async function fleet() {
   const { assets } = await api('assets', { params: { all: 1 } });
@@ -515,6 +545,26 @@ async function usersPane() {
     await api('users/save', { method: 'POST', body: { id: tr.dataset.id || undefined, name: $('.n', tr).value, username: $('.un', tr).value, role: $('.r', tr).value, course_id: $('.cr', tr)?.value || null, password: $('.pw', tr).value, active: $('.ac', tr).checked } });
     toast('Saved'); usersPane();
   }));
+}
+
+/** How long a round takes at this course (minutes). Drives the carts-out animation, the overdue count and the overdue-rounds report. */
+async function timingPane() {
+  const t = timing(), DEF = { t9: 135, t18: 270, late9: 210, late18: 360 };
+  const num = (id, label, v, lo, hi) => `<div><label for="${id}">${label}</label><input id="${id}" type="number" inputmode="numeric" min="${lo}" max="${hi}" step="5" value="${v}"></div>`;
+  $('#pane').innerHTML = `<div class="card"><h2>Round times · ${esc(courseName())}</h2>
+    <p class="mut">How long a round normally takes at this course, in minutes. The carts-out animation places each cart by how far through its <b>expected time</b> it is. A cart still out after its <b>overdue time</b> turns red and is counted as overdue on the home screen, the dashboard and the reports.</p>
+    <div class="row">${num('t9', 'Expected time out · 9 holes (minutes)', t.t9, 20, 400)}${num('t18', 'Expected time out · 18 holes (minutes)', t.t18, 40, 720)}</div>
+    <div class="row">${num('l9', 'Overdue after · 9 holes (minutes)', t.late9, 20, 600)}${num('l18', 'Overdue after · 18 holes (minutes)', t.late18, 40, 900)}</div>
+    <p class="mut" id="tprev"></p>
+    <p style="display:flex;gap:10px;flex-wrap:wrap"><button class="p" id="tsave">Save round times</button><button id="treset">Reset to usual times</button></p></div>`;
+  const val = () => ({ t9: +$('#t9').value, t18: +$('#t18').value, late9: +$('#l9').value, late18: +$('#l18').value });
+  const prev = () => { const v = val(); $('#tprev').textContent = `9 holes: about ${dur(v.t9)}, overdue after ${dur(v.late9)}.  18 holes: about ${dur(v.t18)}, overdue after ${dur(v.late18)}.`; };
+  ['t9', 't18', 'l9', 'l18'].forEach(id => $('#' + id).oninput = prev); prev();
+  $('#treset').onclick = () => { $('#t9').value = DEF.t9; $('#t18').value = DEF.t18; $('#l9').value = DEF.late9; $('#l18').value = DEF.late18; prev(); };
+  $('#tsave').onclick = guard(async () => {
+    await api('course/timing', { method: 'POST', body: val() });
+    const r = await api('auth/me'); COURSES = r.courses; toast('Round times saved');
+  });
 }
 
 /** What an admin lets supervisors and staff open. Checking guests in and out is always available to everyone. */
@@ -600,6 +650,47 @@ const reportsScreen = guard(async (opts = {}) => {
   if ($('#rrun')) $('#rrun').onclick = () => reportsScreen({ preset: '', from: $('#rf').value, to: $('#rt').value });
   $('#rprint').onclick = () => window.print();
   $('#rcsv').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([reportCSV(d)], { type: 'text/csv' })); a.download = `${courseName().toLowerCase().replace(/\W+/g, '-')}-${d.type}-${d.from}-to-${d.to}.csv`; a.click(); };
+});
+
+/* ---------------- member check (counter lookup) ---------------- */
+function memberCheck() {
+  const m = document.createElement('div'); m.className = 'modal';
+  m.innerHTML = `<div><h2>Member check</h2><p class="mut">Search this course's member list by name, member number or mobile.</p>
+    <input id="mq2" type="search" placeholder="e.g. Smith, M014 or 7001234" autocomplete="off" autofocus><div id="mres" style="margin-top:12px"></div><button type="button" id="mx">Close</button></div>`;
+  document.body.append(m);
+  const close = () => m.remove(); $('#mx', m).onclick = close; m.onclick = e => { if (e.target === m) close(); };
+  let t;
+  const run = guard(async () => {
+    const q = $('#mq2', m).value.trim(); if (q.length < 2) { $('#mres', m).innerHTML = ''; return; }
+    const { members } = await api('members/check', { params: { q } });
+    $('#mres', m).innerHTML = members.length ? members.map(x => {
+      const dl = x.days_left === null ? null : +x.days_left, bad = +x.expired === 1, soon = !bad && dl !== null && dl <= 30;
+      const cls = bad ? 'bad' : soon ? '' : 'ok', msg = bad ? `Expired ${fmtD(x.expires_on)}` : x.expires_on ? (soon ? `Expires in ${dl} day${dl === 1 ? '' : 's'} (${fmtD(x.expires_on)})` : `Current until ${fmtD(x.expires_on)}`) : 'Current (no expiry on record)';
+      return `<div class="alert ${cls}" style="margin:8px 0"><b>${esc(x.first_name)} ${esc(x.last_name)}</b>${x.member_no ? ' · #' + esc(x.member_no) : ''}<br>${bad ? '✖' : soon ? '⚠' : '✔'} ${msg}</div>`;
+    }).join('') : '<p class="mut">No member found. They would be checked in as a visitor.</p>';
+  });
+  $('#mq2', m).oninput = () => { clearTimeout(t); t = setTimeout(run, 250); };
+  setTimeout(() => $('#mq2', m)?.focus(), 50);
+}
+
+/* ---------------- cart status board (needs Carts & clubs access) ---------------- */
+const cartBoard = guard(async () => {
+  const { assets } = await api('assets', { params: { all: 1 } });
+  const carts = assets.filter(a => a.kind === 'cart' && +a.active);
+  const n = s => carts.filter(a => a.status === s).length;
+  view(`<div class="card"><h2>Cart status · ${esc(courseName())}</h2>
+    <p class="mut">Tap a cart to mark it in maintenance, or put it back in service. Carts that are out on the course can't be changed until they're returned.</p>
+    <div class="pool-chips" style="margin:6px 0 14px"><span class="chip ok"><b>${n('available')}</b> available</span><span class="chip out"><b>${n('out')}</b> out</span><span class="chip off"><b>${carts.length - n('available') - n('out')}</b> not available</span></div>
+    <div class="fleet big">${carts.map(a => `<button type="button" class="fl ${a.status}" data-id="${a.id}" title="${esc(a.name)} · ${esc(String(a.status).replace('_', ' '))}">${esc(cartNo(a.name))}<small>${esc(String(a.status).replace('_', ' '))}</small></button>`).join('')}</div>
+    <div class="legend">${Object.keys(FL).map(s => [s, n(s)]).filter(([, c]) => c).map(([s, c]) => `<span class="lg"><i class="fl ${s}"></i>${FL[s]} ${c}</span>`).join('')}</div></div>`, 'Cart status', home);
+  document.querySelectorAll('.fleet.big .fl').forEach(b => b.onclick = () => {
+    const a = carts.find(x => x.id == b.dataset.id);
+    if (a.status === 'out') return toast(`${a.name} is out on the course`, true);
+    const inMaint = +a.maintenance === 1, md = document.createElement('div'); md.className = 'modal';
+    md.innerHTML = `<div><h2>${esc(a.name)}</h2><p>Currently <b>${esc(String(a.status).replace('_', ' '))}</b>.</p><button type="button" class="${inMaint ? 'p' : 'd'}" id="mt">${inMaint ? '✔ Back in service' : '🔧 Mark in maintenance'}</button><button type="button" id="mc">Cancel</button></div>`;
+    document.body.append(md); $('#mc', md).onclick = () => md.remove(); md.onclick = e => { if (e.target === md) md.remove(); };
+    $('#mt', md).onclick = guard(async () => { await api('assets/maintenance', { method: 'POST', body: { id: a.id, maintenance: inMaint ? 0 : 1 } }); md.remove(); toast(inMaint ? `${a.name} back in service` : `${a.name} marked for maintenance`); cartBoard(); });
+  });
 });
 
 /** Logo picked in the browser: scaled down and kept as PNG (so transparency survives), stored with the course. */
