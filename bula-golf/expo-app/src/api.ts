@@ -37,7 +37,7 @@ export async function api<T = any>(route: string, opts: { method?: string; body?
   return data as T;
 }
 
-export type Me = { id: number; name: string; role: 'staff' | 'manager' };
+export type Me = { id: number; name: string; role: 'staff' | 'supervisor' | 'admin' | 'manager' };
 export type Asset = { id: number; kind: 'cart' | 'clubs'; name: string; description: string | null; fee: string; status: string; gps_battery: number | null };
 export type Golfer = {
   mobile: string; first_name: string; last_name: string; email: string; country: string; hotel: string; room: string;

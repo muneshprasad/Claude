@@ -69,10 +69,49 @@ function user(): ?array {
                 WHERE t.token_hash=? AND u.active=1 AND t.last_used > (NOW() - INTERVAL 30 DAY)", [hash('sha256', $t)])->fetch();
         if (!$u) return null;
         q('UPDATE api_tokens SET last_used=NOW() WHERE token_hash=?', [hash('sha256', $t)]);
-        return ['id' => (int)$u['id'], 'name' => $u['name'], 'role' => $u['role']];
+        return ['id' => (int)$u['id'], 'name' => $u['name'], 'role' => norm_role((string)$u['role'])];
     }
     start_session();
-    return $_SESSION['user'] ?? null;
+    $s = $_SESSION['user'] ?? null;
+    if (!$s) return null;
+    // role and active flag are read fresh, so an admin's change (or disabling a login) applies at once, not at next sign-in
+    $row = q('SELECT id, name, role FROM users WHERE id=? AND active=1', [(int)$s['id']])->fetch();
+    return $row ? ['id' => (int)$row['id'], 'name' => $row['name'], 'role' => norm_role((string)$row['role'])] : null;
+}
+
+/** Roles: admin (head office, or one course's admin), supervisor, staff. The old "manager" is an admin. */
+function norm_role(string $r): string { return $r === 'manager' ? 'admin' : $r; }
+
+/** What an admin can hand to supervisors and staff. Team and Access management stay with admins; Terms and Courses with head office. */
+const PERMS = ['dashboard', 'reports', 'history', 'fleet', 'members', 'export'];
+
+/** Allowed unless an admin switched it off: supervisors default to everything, staff to nothing extra (they always check guests in and out). */
+function access_matrix(int $course): array {
+    $m = ['supervisor' => array_fill_keys(PERMS, true), 'staff' => array_fill_keys(PERMS, false)];
+    foreach (q('SELECT role, perm, allowed FROM role_perms WHERE course_id=?', [$course])->fetchAll() as $r) {
+        if (isset($m[$r['role']][$r['perm']])) $m[$r['role']][$r['perm']] = (bool)(int)$r['allowed'];
+    }
+    return $m;
+}
+
+function can(array $u, string $perm): bool {
+    if ($u['role'] === 'admin') return true;
+    $course = user_course_id($u);
+    return $course ? (access_matrix($course)[$u['role']][$perm] ?? false) : false;
+}
+
+function my_perms(array $u): array { return array_values(array_filter(PERMS, fn($p) => can($u, $p))); }
+
+function require_perm(string $perm): array {
+    $u = require_login();
+    if (!can($u, $perm)) fail(403, 'You do not have access to this. Ask your admin.');
+    return $u;
+}
+
+function require_course_admin(): array {
+    $u = require_login();
+    if ($u['role'] !== 'admin') fail(403, 'Admin access only');
+    return $u;
 }
 
 function require_login(): array {
@@ -125,19 +164,14 @@ function find_member(int $course, ?string $no, string $mobile, ?string $first = 
     return q($sql . ' ORDER BY (expires_on IS NULL), expires_on DESC LIMIT 1', $p)->fetch() ?: null;
 }
 
-function is_admin(array $u): bool { return $u['role'] === 'manager' && user_course_id($u) === null; }
+function is_admin(array $u): bool { return $u['role'] === 'admin' && user_course_id($u) === null; }
 
 function require_admin(): array {
-    $u = require_manager();
+    $u = require_course_admin();
     if (!is_admin($u)) fail(403, 'Head-office admin only');
     return $u;
 }
 
-function require_manager(): array {
-    $u = require_login();
-    if ($u['role'] !== 'manager') fail(403, 'Manager access only');
-    return $u;
-}
 
 function ip(): string { return substr($_SERVER['REMOTE_ADDR'] ?? '', 0, 45); }
 

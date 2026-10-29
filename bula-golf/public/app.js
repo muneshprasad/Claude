@@ -38,7 +38,7 @@ function toast(msg, err = false) {
 const guard = fn => async (...a) => { try { await fn(...a); } catch (e) { toast(e.message, true); } };
 const money = n => `${CUR} ${Number(n || 0).toFixed(2)}`;
 const hm = s => s ? s.slice(11, 16) : '';
-const fmtDT = s => s ? new Date(s.replace(' ', 'T')).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+const fmtDT = s => s ? new Date(s.replace(' ', 'T')).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
 const setTimer = (fn, ms = 10000) => { clearInterval(timer); timer = fn ? setInterval(() => document.hidden || fn().catch(() => {}), ms) : null; };
 const view = (html, title = '', back = null) => {
   setTimer(null);
@@ -54,14 +54,18 @@ const hireCell = c => `${esc(c.clubs_name) || '—'}${c.items ? `<div class="mut
 let wake = null;
 const keepAwake = async () => { try { if ('wakeLock' in navigator && !wake && !document.hidden && ME) { wake = await navigator.wakeLock.request('screen'); wake.addEventListener('release', () => { wake = null; }); } } catch { /* denied or unsupported: fine */ } };
 document.addEventListener('visibilitychange', () => { if (!document.hidden) keepAwake(); });
-const isMgr = () => ME?.role === 'manager';
-const isAdmin = () => isMgr() && !ME.course_id; // head office: all courses, staff, terms
+/** Roles: admin (head office, or one course's admin), supervisor, staff. What a supervisor or staff member may open is set per course by that course's admin (Settings > Access). */
+const can = p => ME?.role === 'admin' || (ME?.perms || []).includes(p);
+const isCourseAdmin = () => ME?.role === 'admin';
+const isAdmin = () => ME?.role === 'admin' && !ME.course_id; // head office: all courses, terms, courses
+const canSettings = () => isCourseAdmin() || can('fleet') || can('members') || can('export');
 
 /* ---------------- login ---------------- */
 const ICON = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   ret: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>',
   list: '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4v2h6V4M9 11h6M9 15h6"/>',
+  doc: '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 13h6M10 17h6"/>',
   chart: '<path d="M5 20v-9M12 20V5M19 20v-7"/><path d="M3 20h18"/>',
   gear: '<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/>',
 };
@@ -95,9 +99,11 @@ async function home() {
    <button class="big wide" id="new">${ico('plus')}<div>New check-in<small>${free} of ${carts.length} carts available</small></div></button>
    <button class="big alt" id="ret">${ico('ret')}<div>Return cart / clubs<small>${act.checkins.length} on the course now</small></div></button>
    <button class="big alt" id="log">${ico('list')}<div>Today's check-ins</div></button>
-   ${isMgr() ? `<button class="big alt" id="dash">${ico('chart')}<div>Dashboard &amp; history</div></button><button class="big alt" id="set">${ico('gear')}<div>Settings<small>fleet, terms, members, staff, export</small></div></button>` : ''}</div>`);
+   ${can('reports') ? `<button class="big alt" id="rep">${ico('doc')}<div>Reports<small>cart usage, cash-up, members, trends</small></div></button>` : ''}${can('dashboard') || can('history') ? `<button class="big alt" id="dash">${ico('chart')}<div>${can('dashboard') ? 'Dashboard &amp; history' : 'History'}</div></button>` : ''}${canSettings() ? `<button class="big alt" id="set">${ico('gear')}<div>Settings<small>${isCourseAdmin() ? 'fleet, members, team, access, export' : 'the areas your admin has opened to you'}</small></div></button>` : ''}</div>`);
   $('#new').onclick = () => startCheckin(); $('#ret').onclick = returns; $('#log').onclick = () => history(new Date().toLocaleDateString('en-CA'));
-  if (isMgr()) { $('#dash').onclick = () => dashboard(); $('#set').onclick = () => settings(); }
+  if ($('#dash')) $('#dash').onclick = () => can('dashboard') ? dashboard() : history(new Date().toLocaleDateString('en-CA'));
+  if ($('#set')) $('#set').onclick = () => settings();
+  if ($('#rep')) $('#rep').onclick = () => reportsScreen();
 }
 
 /* ---------------- check-in wizard ---------------- */
@@ -320,10 +326,10 @@ function shrink(file, max = 900) {
 async function history(date) {
   const { checkins } = await api('checkins/list', { params: { date } });
   const tot = checkins.reduce((s, c) => s + +c.hire_fee, 0);
-  view(`<div class="card"><h2>Check-ins</h2>${isMgr() ? `<input type="date" id="d" value="${date}" style="max-width:220px">` : '<p class="mut">Today</p>'}
-   ${checkins.length ? `<table><tr><th>Time</th><th>Guest</th><th>Cart</th><th>Clubs</th><th>Hire</th><th></th></tr>${checkins.map(c => `<tr class="${isMgr() ? 'click' : ''}" data-id="${c.id}"><td>${hm(c.checked_in_at)}</td><td><b>${esc(c.guest)}</b>${c.golfers > 1 ? ' +' + (c.golfers - 1) : ''}${c.fee_status === 'member' ? ' <span class="tag">Member</span>' : ''}<div class="mut">${esc(c.mobile)} ${esc(c.hotel || '')}</div></td><td>${esc(c.cart_name) || '—'}</td><td>${hireCell(c)}</td><td>${money(c.hire_fee)}</td>
+  view(`<div class="card"><h2>Check-ins</h2>${can('history') ? `<input type="date" id="d" value="${date}" style="max-width:220px">` : '<p class="mut">Today</p>'}
+   ${checkins.length ? `<table><tr><th>Time</th><th>Guest</th><th>Cart</th><th>Clubs</th><th>Hire</th><th></th></tr>${checkins.map(c => `<tr class="${can('history') ? 'click' : ''}" data-id="${c.id}"><td>${hm(c.checked_in_at)}</td><td><b>${esc(c.guest)}</b>${c.golfers > 1 ? ' +' + (c.golfers - 1) : ''}${c.fee_status === 'member' ? ' <span class="tag">Member</span>' : ''}<div class="mut">${esc(c.mobile)} ${esc(c.hotel || '')}</div></td><td>${esc(c.cart_name) || '—'}</td><td>${hireCell(c)}</td><td>${money(c.hire_fee)}</td>
    <td><span class="tag ${c.returned_at ? (c.return_condition === 'ok' ? '' : 'r') : 'o'}">${c.returned_at ? (c.return_condition === 'ok' ? 'Back ' + hm(c.returned_at) : c.return_condition) : 'Out'}</span></td></tr>`).join('')}</table><h3>Hire total: ${money(tot)}</h3>` : '<p class="mut">No check-ins.</p>'}</div>`, 'Check-ins', home);
-  if (isMgr()) { $('#d').onchange = e => history(e.target.value); document.querySelectorAll('tr.click').forEach(tr => tr.onclick = () => detail(tr.dataset.id, () => history(date))); }
+  if (can('history')) { $('#d').onchange = e => history(e.target.value); document.querySelectorAll('tr.click').forEach(tr => tr.onclick = () => detail(tr.dataset.id, () => history(date))); }
 }
 const detail = guard(async (id, back) => {
   const c = await api('checkins/get', { params: { id } });
@@ -396,7 +402,7 @@ async function courseHtml() {
      ${d.hotels.length ? `<h3>Top hotels</h3>${d.hotels.map(h => meter(esc(h.name), +h.n, +d.hotels[0].n, h.n)).join('')}` : ''}</div>
     <div class="card"><h2>Recent damage &amp; warnings</h2>${d.issues.length ? d.issues.map(i => `<p><span class="tag ${i.return_condition === 'damaged' ? 'r' : 'o'}">${i.return_condition}</span> <b>${esc(i.guest)}</b> · ${fmtDT(i.checked_in_at)}<br><span class="mut">${esc(i.return_note || '')}</span></p>`).join('') : '<p class="mut">None 🎉</p>'}</div>
    </div>
-   <p style="display:flex;gap:10px;flex-wrap:wrap"><button data-go="hist">📋 Browse history &amp; signed waivers</button><button data-go="export">⬇ Export check-ins (CSV)</button></p>`;
+   <p style="display:flex;gap:10px;flex-wrap:wrap">${can('history') ? '<button data-go="hist">📋 Browse history &amp; signed waivers</button>' : ''}${can('export') ? '<button data-go="export">⬇ Export check-ins (CSV)</button>' : ''}</p>`;
 }
 
 const dashboard = guard(async tab => {
@@ -422,10 +428,13 @@ const dashboard = guard(async tab => {
 });
 
 /* ---------------- settings ---------------- */
-function settings(tab = 'fleet') {
-  view(`<div class="tabs">${[['fleet', 'Carts & clubs'], ['members', 'Members'], ...(isAdmin() ? [['terms', 'Terms'], ['users', 'Staff'], ['courses', 'Courses']] : [['users', 'Staff']]), ['export', 'Export']].map(([k, l]) => `<button class="${tab === k ? 'on' : ''}" data-t="${k}">${l}</button>`).join('')}</div><div id="pane"></div>`, 'Settings', home);
+function settings(tab) {
+  const TABS = [...(can('fleet') ? [['fleet', 'Carts & clubs']] : []), ...(can('members') ? [['members', 'Members']] : []), ...(isCourseAdmin() ? [['users', 'Team'], ['access', 'Access']] : []), ...(isAdmin() ? [['terms', 'Terms'], ['courses', 'Courses']] : []), ...(can('export') ? [['export', 'Export']] : [])];
+  if (!TABS.length) return toast('Nothing in Settings is open to you. Ask your admin.', true);
+  if (!TABS.some(([k]) => k === tab)) tab = TABS[0][0];
+  view(`<div class="tabs">${TABS.map(([k, l]) => `<button class="${tab === k ? 'on' : ''}" data-t="${k}">${l}</button>`).join('')}</div><div id="pane"></div>`, 'Settings', home);
   document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => settings(b.dataset.t));
-  guard(async () => ({ fleet, terms: termsPane, users: usersPane, courses: coursesPane, members: membersPane, export: exportPane })[tab]())();
+  guard(async () => ({ fleet, terms: termsPane, users: usersPane, access: accessPane, courses: coursesPane, members: membersPane, export: exportPane })[tab]())();
 }
 async function fleet() {
   const { assets } = await api('assets', { params: { all: 1 } });
@@ -456,21 +465,110 @@ async function termsPane() {
     <textarea id="tb" rows="16">${esc(t.body)}</textarea><p><button class="p" id="sv">Save as new version</button></p></div>`;
   $('#sv').onclick = guard(async () => { await api('terms/save', { method: 'POST', body: { body: $('#tb').value } }); toast('New version saved'); termsPane(); });
 }
+const ROLE_LABEL = { admin: 'Admin', supervisor: 'Supervisor', staff: 'Staff' };
+
 async function usersPane() {
   const { users } = await api('users/list');
-  const copt = id => `<option value="">All courses (head office)</option>${COURSES.map(c => `<option value="${c.id}" ${c.id == id ? 'selected' : ''}>${esc(c.name)} only</option>`).join('')}`;
-  const adm = isAdmin();
-  const cname = id => id ? esc(courseName(id)) : 'All courses';
-  $('#pane').innerHTML = `<div class="card"><h2>${adm ? 'Staff logins' : 'Check-in staff · ' + esc(courseName())}</h2><p class="mut">${adm
-    ? 'Everyone gets their own login. Suggested set-up per course: one <b>manager</b> (the course admin) and two <b>staff</b> (check-in), each set to that course only, so they never see the other course. Course admins can then manage their own check-in staff.'
-    : 'Each person has their own login (no sharing). Add or disable your check-in staff here; leave the password blank to keep the current one.'}</p><table><tr><th>Name</th><th>Username</th>${adm ? '<th>Role</th><th>Course</th>' : ''}<th>New password</th><th></th></tr>${[...users, { name: '', username: '', role: 'staff', active: 1 }].map(u => `<tr data-id="${u.id || ''}"><td><input class="n" value="${esc(u.name)}"></td><td><input class="un" value="${esc(u.username)}"></td>
-    ${adm ? `<td><select class="r"><option>staff</option><option ${u.role === 'manager' ? 'selected' : ''}>manager</option></select></td><td><select class="cr">${copt(u.course_id)}</select></td>` : ''}<td><input class="pw" type="password" placeholder="${u.id ? 'leave blank' : 'required'}"></td><td><label><input class="ac" type="checkbox" ${+u.active ? 'checked' : ''}> Active</label> <button class="sv p">Save</button></td></tr>`).join('')}</table></div>`;
+  const head = isAdmin(); // head office can also create admins and place logins in any course
+  const ROLES = head ? ['staff', 'supervisor', 'admin'] : ['staff', 'supervisor'];
+  const ropt = r => ROLES.map(x => `<option value="${x}" ${x === r ? 'selected' : ''}>${ROLE_LABEL[x]}</option>`).join('');
+  const copt = id => `<option value="">No course (head office)</option>${COURSES.map(c => `<option value="${c.id}" ${c.id == id ? 'selected' : ''}>${esc(c.name)} only</option>`).join('')}`;
+  const n = r => users.filter(u => u.role === r && +u.active).length;
+  $('#pane').innerHTML = `<div class="card"><h2>${head ? 'Team' : 'Team · ' + esc(courseName())}</h2>
+    <p class="mut">Everyone has their own login (no sharing). <b>Admin</b> manages the team and decides access. <b>Supervisor</b> oversees the day, within what you allow under <b>Access</b>. <b>Staff</b> check guests in and out. ${head
+      ? 'Admins and supervisors with a course only ever see that course; an admin with no course is head office.'
+      : 'You can add as many supervisors and staff as you need. Leave the password blank to keep the current one.'}</p>
+    <p class="mut">${head ? '' : `${n('supervisor')} supervisor${n('supervisor') === 1 ? '' : 's'} · ${n('staff')} staff active`}</p>
+    <table><tr><th>Name</th><th>Username</th><th>Role</th>${head ? '<th>Course</th>' : ''}<th>New password</th><th></th></tr>${[...users, { name: '', username: '', role: 'staff', active: 1 }].map(u => `<tr data-id="${u.id || ''}"><td><input class="n" value="${esc(u.name)}"></td><td><input class="un" value="${esc(u.username)}"></td>
+    <td><select class="r">${ropt(u.role)}</select></td>${head ? `<td><select class="cr">${copt(u.course_id)}</select></td>` : ''}<td><input class="pw" type="password" placeholder="${u.id ? 'leave blank' : 'required'}"></td><td style="white-space:nowrap"><label><input class="ac" type="checkbox" ${+u.active ? 'checked' : ''}> Active</label> <button class="sv p">${u.id ? 'Save' : 'Add'}</button></td></tr>`).join('')}</table></div>`;
   document.querySelectorAll('button.sv').forEach(b => b.onclick = guard(async () => {
     const tr = b.closest('tr');
-    await api('users/save', { method: 'POST', body: { id: tr.dataset.id || undefined, name: $('.n', tr).value, username: $('.un', tr).value, role: $('.r', tr)?.value, course_id: $('.cr', tr)?.value || null, password: $('.pw', tr).value, active: $('.ac', tr).checked } });
+    await api('users/save', { method: 'POST', body: { id: tr.dataset.id || undefined, name: $('.n', tr).value, username: $('.un', tr).value, role: $('.r', tr).value, course_id: $('.cr', tr)?.value || null, password: $('.pw', tr).value, active: $('.ac', tr).checked } });
     toast('Saved'); usersPane();
   }));
 }
+
+/** What an admin lets supervisors and staff open. Checking guests in and out is always available to everyone. */
+async function accessPane() {
+  const d = await api('access/get'), m = d.matrix;
+  const LAB = {
+    dashboard: ['Dashboard', 'Figures, fleet board and who is on the course'],
+    reports: ['Reports', 'Cash-up, peak times, fleet use, guest mix, members, incidents and trends'],
+    history: ['History & signed waivers', 'Browse past check-ins by date and open signed terms'],
+    fleet: ['Carts & clubs', 'Add or edit carts, club sets and hire items; mark for maintenance'],
+    members: ['Members', 'View, add and upload the member list'],
+    export: ['Export', 'Download check-in lists as CSV'],
+  };
+  $('#pane').innerHTML = `<div class="card"><h2>Access · ${esc(courseName())}</h2>
+    <p class="mut">Choose what supervisors and staff at this course can open. Admins always have everything. Everyone can check guests in, return carts and see today's check-ins. Managing the team and these settings stays with admins, and Terms and Courses with head office.</p>
+    <table><tr><th>Area</th><th style="text-align:center">Admin</th><th style="text-align:center">Supervisor</th><th style="text-align:center">Staff</th></tr>${d.perms.map(p => `<tr><td><b>${LAB[p][0]}</b><div class="mut">${LAB[p][1]}</div></td><td style="text-align:center">✔</td>
+      <td style="text-align:center"><input type="checkbox" data-r="supervisor" data-p="${p}" ${m.supervisor[p] ? 'checked' : ''}></td><td style="text-align:center"><input type="checkbox" data-r="staff" data-p="${p}" ${m.staff[p] ? 'checked' : ''}></td></tr>`).join('')}</table>
+    <p><button class="p" id="sa">Save access</button></p></div>`;
+  $('#sa').onclick = guard(async () => {
+    const matrix = { supervisor: {}, staff: {} };
+    document.querySelectorAll('input[data-r]').forEach(i => { matrix[i.dataset.r][i.dataset.p] = i.checked; });
+    await api('access/save', { method: 'POST', body: { matrix } }); toast('Access saved');
+  });
+}
+
+/* ---------------- reports ---------------- */
+const RPT = { type: 'cashup', preset: 'month', from: '', to: '' };
+const REPORTS = [
+  ['cashup', 'Daily cash-up', 'Hire income and what is still to collect, by day and by staff member'],
+  ['rounds', 'Rounds & peak times', 'Busiest days and hours, golfers per round, time out on the course'],
+  ['fleet', 'Cart & equipment usage', 'How many times each cart and hire item was used, most to least, plus idle and damaged'],
+  ['guests', 'Guest mix', 'Fiji residents and overseas, top countries and hotels, returning guests'],
+  ['members', 'Members', 'Renewal call list, most active members, members who have gone quiet'],
+  ['incidents', 'Incidents & audit', 'Damage, warnings, member no-fee check-ins by staff, carts not returned'],
+  ['trends', '12-month trend', 'Month by month, for budgeting and planning (ignores the period)'],
+];
+const presetRange = k => {
+  const t = new Date(), y = t.getFullYear(), m = t.getMonth(), back = n => { const f = new Date(t); f.setDate(f.getDate() - n); return isoDay(f); };
+  const mon = new Date(t); mon.setDate(t.getDate() - ((t.getDay() + 6) % 7)); // Monday of this week
+  const lastMon = new Date(mon); lastMon.setDate(mon.getDate() - 7);
+  const lastSun = new Date(mon); lastSun.setDate(mon.getDate() - 1);
+  return { today: [isoDay(t), isoDay(t)], week: [isoDay(mon), isoDay(t)], lastweek: [isoDay(lastMon), isoDay(lastSun)], '7': [back(6), isoDay(t)], month: [isoDay(new Date(y, m, 1)), isoDay(t)], last: [isoDay(new Date(y, m - 1, 1)), isoDay(new Date(y, m, 0))], '90': [back(89), isoDay(t)] }[k];
+};
+const fmtCell = (v, t) => {
+  if (v === null || v === undefined || v === '') return '—';
+  if (t === 'money') return money(v);
+  if (t === 'int') return Number(v).toLocaleString();
+  if (t === 'pct') return v + '%';
+  if (t === 'mins') return dur(+v);
+  if (t === 'date') return /^\d{4}-\d{2}-\d{2}/.test(String(v)) ? fmtD(String(v).slice(0, 10)) : esc(v);
+  if (t === 'datetime') return fmtDT(String(v));
+  return esc(v);
+};
+const reportCSV = d => {
+  const q = v => { const s = String(v ?? ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const lines = [[courseFull(), d.title, `${d.from} to ${d.to}`], ...d.summary.map(([l, v]) => [l, v]), []];
+  d.sections.forEach(s => { lines.push([s.title], s.columns.map(c => c[0]), ...s.rows, []); });
+  return '﻿' + lines.map(r => r.map(q).join(',')).join('\r\n');
+};
+
+const reportsScreen = guard(async (opts = {}) => {
+  Object.assign(RPT, opts);
+  if (!RPT.from) [RPT.from, RPT.to] = presetRange('month');
+  const d = await api('reports/run', { params: { type: RPT.type, from: RPT.from, to: RPT.to } });
+  const trend = RPT.type === 'trends';
+  view(`<div class="card noprint"><h2>Reports · ${esc(courseName())}</h2>
+    <div class="rgrid">${REPORTS.map(([k, t, s]) => `<button class="rcard ${RPT.type === k ? 'on' : ''}" data-r="${k}"><b>${t}</b><span>${s}</span></button>`).join('')}</div>
+    <h3>Period</h3>
+    <div class="seg">${[['today', 'Today'], ['week', 'This week'], ['lastweek', 'Last week'], ['month', 'This month'], ['last', 'Last month'], ['90', 'Last 90 days']].map(([k, l]) => `<button data-p="${k}" class="${RPT.preset === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <div class="row"><div><label>From</label><input id="rf" type="date" value="${RPT.from}"></div><div><label>To</label><input id="rt" type="date" value="${RPT.to}"></div></div>
+    <p><button class="p" id="rrun">Run report</button></p></div>
+   <div class="card" id="rout"><div class="rhead"><div><h2>${esc(d.title)}</h2><div class="mut">${esc(courseFull())} · ${trend ? 'last 12 months' : `${fmtD(d.from)} to ${fmtD(d.to)}`}</div></div>
+     <div class="noprint" style="display:flex;gap:8px;flex-wrap:wrap"><button id="rprint">🖨 Print</button><button id="rcsv">⬇ Save as CSV</button></div></div>
+    ${d.summary.length ? `<div class="stats">${d.summary.map(([l, v, t]) => stat0(fmtCell(v, t), l)).join('')}</div>` : ''}
+    ${d.sections.map(s => `<h3>${esc(s.title)}</h3>${s.rows.length ? `<table><tr>${s.columns.map(c => `<th${['int', 'money', 'pct', 'mins'].includes(c[1]) ? ' style="text-align:right"' : ''}>${esc(c[0])}</th>`).join('')}</tr>${s.rows.map(r => `<tr${r[0] === 'Total' ? ' style="font-weight:700"' : ''}>${r.map((v, i) => `<td${['int', 'money', 'pct', 'mins'].includes(s.columns[i][1]) ? ' style="text-align:right"' : ''}>${fmtCell(v, s.columns[i][1])}</td>`).join('')}</tr>`).join('')}</table>` : '<p class="mut">Nothing in this period.</p>'}`).join('')}
+    <p class="mut noprint" style="margin-top:18px">Figures come from check-ins recorded on the tablets. Hire income is the hire fees recorded at check-in (green-fee rates are not yet part of the system).</p></div>`, 'Reports', home);
+  document.querySelectorAll('.rcard').forEach(b => b.onclick = () => reportsScreen({ type: b.dataset.r }));
+  document.querySelectorAll('[data-p]').forEach(b => b.onclick = () => { const [f, t] = presetRange(b.dataset.p); reportsScreen({ preset: b.dataset.p, from: f, to: t }); });
+  $('#rrun').onclick = () => reportsScreen({ preset: '', from: $('#rf').value, to: $('#rt').value });
+  $('#rprint').onclick = () => window.print();
+  $('#rcsv').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([reportCSV(d)], { type: 'text/csv' })); a.download = `${courseName().toLowerCase().replace(/\W+/g, '-')}-${d.type}-${d.from}-to-${d.to}.csv`; a.click(); };
+});
+
 /** Logo picked in the browser: scaled down and kept as PNG (so transparency survives), stored with the course. */
 function logoData(file, max = 360) {
   return new Promise((res, rej) => {

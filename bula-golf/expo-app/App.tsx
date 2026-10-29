@@ -33,7 +33,7 @@ export default function App() {
 
   if (!ready) return <Loading />;
   if (!me) return <><StatusBar barStyle="dark-content" /><SafeAreaView style={{ flex: 1, backgroundColor: C.bg }}><Login onDone={m => { setMe(m); setScreen('home'); }} /></SafeAreaView></>;
-  const mgr = me.role === 'manager';
+  const mgr = me.role !== 'staff'; // admin, supervisor (and the old manager)
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: C.bg }}>
       <StatusBar barStyle="light-content" />

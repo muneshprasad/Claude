@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
   username VARCHAR(50) NOT NULL UNIQUE,
   name VARCHAR(100) NOT NULL,
   pass_hash VARCHAR(255) NOT NULL,
-  role ENUM('staff','manager') NOT NULL DEFAULT 'staff',
+  role ENUM('staff','supervisor','admin') NOT NULL DEFAULT 'staff',
   course_id INT NULL,                     -- NULL = head office: can switch between all courses
   active TINYINT(1) NOT NULL DEFAULT 1,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -143,6 +143,15 @@ CREATE TABLE IF NOT EXISTS terms (
   body MEDIUMTEXT NOT NULL,
   created_by INT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- What each course's admin allows supervisors and staff to do (no rows = defaults: supervisors everything, staff nothing extra).
+CREATE TABLE IF NOT EXISTS role_perms (
+  course_id INT NOT NULL,
+  role ENUM('supervisor','staff') NOT NULL,
+  perm VARCHAR(30) NOT NULL,
+  allowed TINYINT(1) NOT NULL,
+  PRIMARY KEY (course_id, role, perm)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS audit_log (

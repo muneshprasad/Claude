@@ -22,9 +22,9 @@ try {
             fail(401, 'Wrong username or password');
         }
         q('DELETE FROM login_attempts WHERE username=?', [$u]);
-        $me = ['id' => (int)$row['id'], 'name' => $row['name'], 'role' => $row['role']];
+        $me = ['id' => (int)$row['id'], 'name' => $row['name'], 'role' => norm_role((string)$row['role'])];
         $courses = q('SELECT id,name,full_name,tennis,shoes,room_charge,(logo IS NOT NULL) AS has_logo,UNIX_TIMESTAMP(logo_at) AS logo_v FROM courses WHERE active=1 ORDER BY id')->fetchAll();
-        $meOut = $me + ['course_id' => $row['course_id'] === null ? null : (int)$row['course_id']];
+        $meOut = $me + ['course_id' => $row['course_id'] === null ? null : (int)$row['course_id'], 'perms' => my_perms($me)];
         audit((int)$row['id'], 'login');
         if (!empty($b['app'])) { // mobile app: issue a token instead of a cookie session
             $tok = bin2hex(random_bytes(32));
@@ -44,7 +44,7 @@ try {
     case 'auth/me': {
         $u = user();
         $c = cfg();
-        out(['user' => $u ? $u + ['course_id' => user_course_id($u)] : null, 'currency' => $c['currency'], 'course' => $c['course_name'],
+        out(['user' => $u ? $u + ['course_id' => user_course_id($u), 'perms' => my_perms($u)] : null, 'currency' => $c['currency'], 'course' => $c['course_name'],
               // course names and logos are public (the sign-in screen shows them); the hire switches only go to signed-in users
               'courses' => q('SELECT id,name,full_name,' . ($u ? 'tennis,shoes,room_charge,' : '') . '(logo IS NOT NULL) AS has_logo,UNIX_TIMESTAMP(logo_at) AS logo_v FROM courses WHERE active=1 ORDER BY id')->fetchAll()]);
     }
@@ -72,7 +72,7 @@ try {
         out(['guests' => q('SELECT * FROM guests WHERE CONCAT(first_name," ",last_name) LIKE ? OR mobile LIKE ? ORDER BY last_visit DESC LIMIT 15', [$s, $s])->fetchAll()]);
     }
     case 'guests/alert': { // manager sets or clears a patron warning note
-        $u = require_manager();
+        $u = require_perm('history');
         $b = body();
         q('UPDATE guests SET alert_note=? WHERE id=?', [clean($b['note'] ?? null, 255), (int)$b['id']]);
         audit($u['id'], 'guest_alert', 'guest ' . (int)$b['id']);
@@ -88,7 +88,7 @@ try {
         out(['assets' => $rows]);
     }
     case 'assets/save': {
-        $u = require_manager();
+        $u = require_perm('fleet');
         $b = body();
         $kind = in_array($b['kind'] ?? '', ['cart', 'clubs', 'shoes', 'racquet'], true) ? $b['kind'] : fail(422, 'Bad kind');
         $name = clean($b['name'] ?? null, 80) ?? fail(422, 'Name required');
@@ -106,7 +106,7 @@ try {
     }
 
     case 'assets/bulk': { // create a run of carts/club sets, e.g. "Cart 1".."Cart 40"; names that already exist are skipped
-        $u = require_manager();
+        $u = require_perm('fleet');
         $b = body();
         $kind = in_array($b['kind'] ?? '', ['cart', 'clubs', 'shoes', 'racquet'], true) ? $b['kind'] : fail(422, 'Bad kind');
         $prefix = clean($b['prefix'] ?? null, 60) ?? fail(422, 'Name prefix required');
@@ -124,7 +124,7 @@ try {
 
     // ---------- members (each course keeps its own list) ----------
     case 'members/list': {
-        $u = require_manager();
+        $u = require_perm('members');
         $cid = course_id($u);
         $w = 'course_id=?'; $p = [$cid];
         $s = trim((string)($_GET['q'] ?? ''));
@@ -138,7 +138,7 @@ try {
                             COALESCE(SUM(expires_on BETWEEN CURDATE() AND (CURDATE() + INTERVAL 30 DAY)),0) expiring FROM members WHERE course_id=?', [$cid])->fetch()]);
     }
     case 'members/import': { // rows parsed in the browser from the course's CSV; "replace" swaps the whole list
-        $u = require_manager();
+        $u = require_perm('members');
         $cid = course_id($u);
         $b = body();
         $rows = $b['rows'] ?? [];
@@ -167,7 +167,7 @@ try {
         out(['created' => $created, 'updated' => $updated, 'error_count' => count($errors), 'errors' => array_slice($errors, 0, 20)]);
     }
     case 'members/save': {
-        $u = require_manager();
+        $u = require_perm('members');
         $cid = course_id($u);
         $b = body();
         $first = clean($b['first_name'] ?? null, 80) ?? fail(422, 'First name required');
@@ -182,7 +182,7 @@ try {
         out(['ok' => true]);
     }
     case 'members/delete': {
-        $u = require_manager();
+        $u = require_perm('members');
         q('DELETE FROM members WHERE id=? AND course_id=?', [(int)(body()['id'] ?? 0), course_id($u)]);
         audit($u['id'], 'member_delete', 'id ' . (int)(body()['id'] ?? 0));
         out(['ok' => true]);
@@ -274,11 +274,11 @@ try {
     case 'checkins/list': {
         $u = require_login();
         $d = preg_match('/^\d{4}-\d{2}-\d{2}$/', $_GET['date'] ?? '') ? $_GET['date'] : date('Y-m-d');
-        if ($u['role'] !== 'manager' && $d !== date('Y-m-d')) fail(403, 'Managers only');
+        if (!can($u, 'history') && $d !== date('Y-m-d')) fail(403, 'Only today\'s check-ins are open to you. Ask your admin for history access.');
         out(['checkins' => checkin_rows('c.course_id=? AND DATE(c.checked_in_at)=?', [course_id($u), $d])]);
     }
     case 'checkins/get': {
-        $u = require_manager();
+        $u = require_perm('history');
         $id = (int)($_GET['id'] ?? 0);
         $c = q('SELECT c.*, ca.name cart_name, cl.name clubs_name, u.name staff_name FROM checkins c LEFT JOIN assets ca ON ca.id=c.cart_id LEFT JOIN assets cl ON cl.id=c.clubs_id JOIN users u ON u.id=c.staff_id WHERE c.id=? AND c.course_id=?', [$id, course_id($u)])->fetch() ?: fail(404, 'Not found');
         $c['golfers'] = q('SELECT g.first_name,g.last_name,g.mobile,g.email,g.hotel,g.room,cg.signature,cg.signed_at,cg.guardian_name,cg.is_main,cg.guest_type,(SELECT mm.member_no FROM members mm WHERE mm.id=cg.member_id) AS member_no FROM checkin_golfers cg JOIN guests g ON g.id=cg.guest_id WHERE cg.checkin_id=? ORDER BY cg.id', [$id])->fetchAll();
@@ -325,7 +325,7 @@ try {
 
     // ---------- dashboard / export ----------
     case 'dashboard': {
-        $u = require_manager();
+        $u = require_perm('dashboard');
         $cid = course_id($u);
         $range = in_array((int)($_GET['range'] ?? 7), [1, 7, 30], true) ? (int)$_GET['range'] : 7;
         $since = "c.course_id=$cid AND c.checked_in_at >= (CURDATE() - INTERVAL " . ($range - 1) . " DAY)";
@@ -398,7 +398,7 @@ try {
         out(['ok' => true]);
     }
     case 'export': {
-        $u = require_manager();
+        $u = require_perm('export');
         $from = preg_match('/^\d{4}-\d{2}-\d{2}$/', $_GET['from'] ?? '') ? $_GET['from'] : date('Y-m-01');
         $to = preg_match('/^\d{4}-\d{2}-\d{2}$/', $_GET['to'] ?? '') ? $_GET['to'] : date('Y-m-d');
         $marketing = ($_GET['type'] ?? '') === 'marketing';
@@ -425,27 +425,29 @@ try {
 
     // ---------- users ----------
     case 'users/list': {
-        $u = require_manager();
-        $bound = user_course_id($u); // a course admin only sees their own course's check-in staff
+        $u = require_course_admin();
+        $bound = user_course_id($u); // a course admin sees only their own course's supervisors and staff
         out(['users' => $bound
-            ? q("SELECT id,username,name,role,course_id,active FROM users WHERE course_id=? AND role='staff' ORDER BY name", [$bound])->fetchAll()
+            ? q("SELECT id,username,name,role,course_id,active FROM users WHERE course_id=? AND role IN ('staff','supervisor') ORDER BY role DESC, name", [$bound])->fetchAll()
             : q('SELECT id,username,name,role,course_id,active FROM users ORDER BY name')->fetchAll()]);
     }
-    case 'users/save': {
-        $u = require_manager();
+    case 'users/save': { // head office creates anyone; a course admin creates and manages supervisors and staff for their own course
+        $u = require_course_admin();
         $b = body();
         $bound = user_course_id($u);
         $courseId = $bound ?: (!empty($b['course_id']) ? (int)$b['course_id'] : null);
         if ($courseId !== null && !q('SELECT 1 FROM courses WHERE id=?', [$courseId])->fetch()) fail(422, 'Unknown course');
         $un = strtolower(trim((string)($b['username'] ?? '')));
         $name = clean($b['name'] ?? null, 100);
-        $role = !$bound && ($b['role'] ?? '') === 'manager' ? 'manager' : 'staff';
+        $role = in_array($b['role'] ?? '', ['staff', 'supervisor', 'admin'], true) ? $b['role'] : 'staff';
+        if ($bound && $role === 'admin') fail(403, 'Only head office can create admins');
+        if ($role !== 'admin' && $courseId === null) fail(422, 'Choose a course for this login');
         $pw = (string)($b['password'] ?? '');
         if (!preg_match('/^[a-z0-9._-]{3,50}$/', $un) || !$name) fail(422, 'Username (3+ letters/numbers) and name required');
         if (!empty($b['id'])) {
-            if ($bound && !q("SELECT 1 FROM users WHERE id=? AND course_id=? AND role='staff'", [(int)$b['id'], $bound])->fetch()) fail(403, 'You can only manage check-in staff for your own course');
+            if ($bound && !q("SELECT 1 FROM users WHERE id=? AND course_id=? AND role IN ('staff','supervisor')", [(int)$b['id'], $bound])->fetch()) fail(403, 'You can only manage supervisors and staff for your own course');
             if (q('SELECT 1 FROM users WHERE username=? AND id<>?', [$un, (int)$b['id']])->fetch()) fail(409, 'Username taken');
-            if ((int)$b['id'] === $u['id'] && (isset($b['active']) && !$b['active'] || $role !== 'manager' || $courseId !== null)) fail(422, "You can't demote, disable or restrict yourself");
+            if ((int)$b['id'] === $u['id'] && (isset($b['active']) && !$b['active'] || $role !== 'admin' || $courseId !== null)) fail(422, "You can't demote, disable or restrict yourself");
             q('UPDATE users SET username=?,name=?,role=?,course_id=?,active=? WHERE id=?', [$un, $name, $role, $courseId, empty($b['active']) && isset($b['active']) ? 0 : 1, (int)$b['id']]);
             if ($pw !== '') { if (strlen($pw) < 8) fail(422, 'Password: 8+ characters'); q('UPDATE users SET pass_hash=? WHERE id=?', [password_hash($pw, PASSWORD_DEFAULT), (int)$b['id']]); }
         } else {
@@ -453,7 +455,33 @@ try {
             if (q('SELECT 1 FROM users WHERE username=?', [$un])->fetch()) fail(409, 'Username taken');
             q('INSERT INTO users (username,name,role,course_id,pass_hash) VALUES (?,?,?,?,?)', [$un, $name, $role, $courseId, password_hash($pw, PASSWORD_DEFAULT)]);
         }
-        audit($u['id'], 'user_save', $un);
+        audit($u['id'], 'user_save', "$un ($role)");
+        out(['ok' => true]);
+    }
+
+    // ---------- reports (admins can give this to supervisors and staff under Access) ----------
+    case 'reports/run': {
+        $u = require_perm('reports');
+        $from = valid_date($_GET['from'] ?? null) ?? date('Y-m-01');
+        $to = valid_date($_GET['to'] ?? null) ?? date('Y-m-d');
+        if ($to < $from) [$from, $to] = [$to, $from];
+        if ((strtotime($to) - strtotime($from)) > 400 * 86400) fail(422, 'Choose a period of up to 13 months');
+        out(report_run((string)($_GET['type'] ?? ''), course_id($u), $from, $to));
+    }
+
+    // ---------- access: what supervisors and staff may do, per course (admins always can do everything) ----------
+    case 'access/get': {
+        $u = require_course_admin();
+        out(['perms' => PERMS, 'matrix' => access_matrix(course_id($u))]);
+    }
+    case 'access/save': {
+        $u = require_course_admin();
+        $cid = course_id($u);
+        $m = body()['matrix'] ?? [];
+        foreach (['supervisor', 'staff'] as $role) foreach (PERMS as $p) {
+            q('REPLACE INTO role_perms (course_id, role, perm, allowed) VALUES (?,?,?,?)', [$cid, $role, $p, empty($m[$role][$p]) ? 0 : 1]);
+        }
+        audit($u['id'], 'access_save', "course $cid");
         out(['ok' => true]);
     }
 
@@ -473,4 +501,140 @@ function checkin_rows(string $where, array $p): array {
               u.name staff
               FROM checkins c JOIN guests g ON g.id=c.main_guest_id LEFT JOIN assets ca ON ca.id=c.cart_id LEFT JOIN assets cl ON cl.id=c.clubs_id JOIN users u ON u.id=c.staff_id
               WHERE $where ORDER BY c.id DESC LIMIT 300", $p)->fetchAll();
+}
+/**
+ * Reports for planning and improvement. Every report is a list of sections (title, typed columns, rows) plus headline figures,
+ * so the tablet can show it, print it and save it as CSV the same way. Column types: text, int, money, pct, mins, date, datetime.
+ */
+function report_run(string $type, int $cid, string $from, string $to): array {
+    $W = 'c.course_id=? AND DATE(c.checked_in_at) BETWEEN ? AND ?';
+    $P = [$cid, $from, $to];
+    $golfers = '(SELECT COUNT(*) FROM checkin_golfers x WHERE x.checkin_id=c.id)';
+    $local = "LOWER(g.country) IN ('fiji','fijian','fiji islands')";
+    $sections = []; $summary = [];
+    $sec = function (string $title, array $cols, array $rows) use (&$sections) { $sections[] = ['title' => $title, 'columns' => $cols, 'rows' => $rows]; };
+    $pct = fn($a, $b) => $b > 0 ? round(100 * $a / $b, 1) : 0;
+    $titles = ['cashup' => 'Daily cash-up', 'rounds' => 'Rounds and peak times', 'fleet' => 'Cart and equipment usage', 'guests' => 'Guest mix', 'members' => 'Members', 'incidents' => 'Incidents and audit', 'trends' => '12-month trend'];
+    if (!isset($titles[$type])) fail(422, 'Unknown report');
+
+    if ($type === 'cashup') {
+        $rows = q("SELECT DATE(c.checked_in_at) d, COUNT(*) rounds, SUM($golfers) golfers, SUM(c.hire_fee) hire,
+                   SUM(CASE WHEN c.fee_status='paid' THEN c.hire_fee ELSE 0 END) paid, SUM(CASE WHEN c.fee_status='room' THEN c.hire_fee ELSE 0 END) room,
+                   SUM(CASE WHEN c.fee_status='unpaid' THEN c.hire_fee ELSE 0 END) unpaid, SUM(c.fee_status='member') member_rounds
+                   FROM checkins c WHERE $W GROUP BY DATE(c.checked_in_at) ORDER BY d", $P)->fetchAll();
+        $t = ['rounds' => 0, 'golfers' => 0, 'hire' => 0, 'paid' => 0, 'room' => 0, 'unpaid' => 0, 'm' => 0];
+        $out = [];
+        foreach ($rows as $r) {
+            $out[] = [$r['d'], (int)$r['rounds'], (int)$r['golfers'], (float)$r['hire'], (float)$r['paid'], (float)$r['room'], (float)$r['unpaid'], (int)$r['member_rounds']];
+            $t['rounds'] += $r['rounds']; $t['golfers'] += $r['golfers']; $t['hire'] += $r['hire']; $t['paid'] += $r['paid']; $t['room'] += $r['room']; $t['unpaid'] += $r['unpaid']; $t['m'] += $r['member_rounds'];
+        }
+        if ($out) $out[] = ['Total', $t['rounds'], $t['golfers'], $t['hire'], $t['paid'], $t['room'], $t['unpaid'], $t['m']];
+        $sec('By day', [['Date', 'date'], ['Check-ins', 'int'], ['Golfers', 'int'], ['Hire total', 'money'], ['Paid', 'money'], ['Charged to room', 'money'], ['Still to collect', 'money'], ['Member check-ins (no fee)', 'int']], $out);
+        $st = q("SELECT u.name, COUNT(*) rounds, SUM(c.hire_fee) hire, SUM(CASE WHEN c.fee_status='unpaid' THEN c.hire_fee ELSE 0 END) unpaid, SUM(c.fee_status='member') member_rounds
+                 FROM checkins c JOIN users u ON u.id=c.staff_id WHERE $W GROUP BY u.id, u.name ORDER BY rounds DESC", $P)->fetchAll();
+        $sec('By staff member', [['Staff', 'text'], ['Check-ins', 'int'], ['Hire total', 'money'], ['Still to collect', 'money'], ['Member check-ins (no fee)', 'int']],
+             array_map(fn($r) => [$r['name'], (int)$r['rounds'], (float)$r['hire'], (float)$r['unpaid'], (int)$r['member_rounds']], $st));
+        $summary = [['Check-ins', $t['rounds'], 'int'], ['Hire total', $t['hire'], 'money'], ['Charged to room', $t['room'], 'money'], ['Still to collect', $t['unpaid'], 'money']];
+    }
+
+    if ($type === 'rounds') {
+        $days = ['', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        $wk = q("SELECT DAYOFWEEK(c.checked_in_at) w, COUNT(*) rounds, SUM($golfers) golfers, COUNT(DISTINCT DATE(c.checked_in_at)) days FROM checkins c WHERE $W GROUP BY DAYOFWEEK(c.checked_in_at)", $P)->fetchAll();
+        usort($wk, fn($a, $b) => (($a['w'] + 5) % 7) <=> (($b['w'] + 5) % 7)); // Monday first
+        $sec('By day of week', [['Day', 'text'], ['Check-ins', 'int'], ['Golfers', 'int'], ['Average check-ins per day', 'text']],
+             array_map(fn($r) => [$days[(int)$r['w']], (int)$r['rounds'], (int)$r['golfers'], $r['days'] > 0 ? number_format($r['rounds'] / $r['days'], 1) : '0'], $wk));
+        $hr = q("SELECT HOUR(c.checked_in_at) h, COUNT(*) rounds, SUM($golfers) golfers FROM checkins c WHERE $W GROUP BY HOUR(c.checked_in_at) ORDER BY h", $P)->fetchAll();
+        $sec('By hour of check-in', [['Hour', 'text'], ['Check-ins', 'int'], ['Golfers', 'int']], array_map(fn($r) => [sprintf('%02d:00', $r['h']), (int)$r['rounds'], (int)$r['golfers']], $hr));
+        $du = q("SELECT c.holes, COUNT(*) n, AVG(TIMESTAMPDIFF(MINUTE, c.checked_in_at, c.returned_at)) avg_min,
+                 SUM(TIMESTAMPDIFF(MINUTE, c.checked_in_at, c.returned_at) > IF(c.holes=9, 210, 360)) late
+                 FROM checkins c WHERE $W AND c.returned_at IS NOT NULL GROUP BY c.holes ORDER BY c.holes", $P)->fetchAll();
+        $sec('Time out on the course (cart and clubs returned)', [['Holes', 'int'], ['Returned check-ins', 'int'], ['Average time out', 'mins'], ['Slow rounds (over 3.5h for 9, 6h for 18)', 'int']],
+             array_map(fn($r) => [(int)$r['holes'], (int)$r['n'], (int)round((float)$r['avg_min']), (int)$r['late']], $du));
+        $tot = q("SELECT COUNT(*) rounds, COALESCE(SUM($golfers),0) golfers, COALESCE(SUM(c.holes=9),0) nine FROM checkins c WHERE $W", $P)->fetch();
+        $summary = [['Check-ins', (int)$tot['rounds'], 'int'], ['Golfers', (int)$tot['golfers'], 'int'], ['Golfers per check-in', $tot['rounds'] ? round($tot['golfers'] / $tot['rounds'], 2) : 0, 'text'], ['9-hole share', $pct($tot['nine'], $tot['rounds']), 'pct']];
+    }
+
+    if ($type === 'fleet') {
+        $rows = q("SELECT a.kind, a.name, a.fee, a.maintenance,
+                   (SELECT COUNT(*) FROM checkins c WHERE c.course_id=a.course_id AND DATE(c.checked_in_at) BETWEEN ? AND ? AND " . HOLDS_SQL . ") uses,
+                   (SELECT COUNT(*) FROM checkins c WHERE c.course_id=a.course_id AND DATE(c.checked_in_at) BETWEEN ? AND ? AND c.return_condition='damaged' AND " . HOLDS_SQL . ") damaged,
+                   (SELECT MAX(c.checked_in_at) FROM checkins c WHERE c.course_id=a.course_id AND " . HOLDS_SQL . ") last_used
+                   FROM assets a WHERE a.course_id=? AND a.active=1 ORDER BY a.kind, a.sort_order, a.name", [$from, $to, $from, $to, $cid])->fetchAll();
+        $by = []; foreach ($rows as $r) $by[$r['kind']][] = $r;
+        $names = ['cart' => 'Golf carts', 'clubs' => 'Club sets', 'shoes' => 'Rental shoes', 'racquet' => 'Tennis hire'];
+        $cartUsed = $cartTotal = $dmg = $idle = $cartHires = 0; $top = null;
+        foreach ($names as $k => $label) {
+            if (empty($by[$k])) continue;
+            usort($by[$k], fn($a, $b) => ((int)$b['uses'] <=> (int)$a['uses']) ?: strnatcmp($a['name'], $b['name'])); // most used first
+            $sec($label, [['Name', 'text'], ['Times hired', 'int'], ['Estimated hire income', 'money'], ['Damaged returns', 'int'], ['Last used', 'datetime'], ['Note', 'text']],
+                 array_map(function ($r) {
+                     $note = (int)$r['maintenance'] ? 'In maintenance' : ((int)$r['uses'] === 0 ? 'Not used this period' : ((int)$r['damaged'] > 0 ? 'Had damage' : ''));
+                     return [$r['name'], (int)$r['uses'], (int)$r['uses'] * (float)$r['fee'], (int)$r['damaged'], $r['last_used'], $note];
+                 }, $by[$k]));
+            foreach ($by[$k] as $r) {
+                $dmg += (int)$r['damaged']; if ((int)$r['uses'] === 0) $idle++;
+                if ($k === 'cart') { $cartTotal++; $cartHires += (int)$r['uses']; if ((int)$r['uses'] > 0) $cartUsed++; if ($top === null || (int)$r['uses'] > $top['uses']) $top = ['name' => $r['name'], 'uses' => (int)$r['uses']]; }
+            }
+        }
+        $summary = [['Total cart hires', $cartHires, 'int'], ['Most used cart', $top && $top['uses'] > 0 ? $top['name'] . ' (' . $top['uses'] . ' times)' : '—', 'text'],
+                    ['Average hires per cart', $cartTotal ? round($cartHires / $cartTotal, 1) : 0, 'text'], ['Carts never used', $cartTotal - $cartUsed, 'int'], ['Damaged returns', $dmg, 'int']];
+    }
+
+    if ($type === 'guests') {
+        $o = q("SELECT CASE WHEN g.country IS NULL OR g.country='' THEN 'Not recorded' WHEN $local THEN 'Fiji residents' ELSE 'Overseas visitors' END k, COUNT(*) n
+                FROM checkins c JOIN guests g ON g.id=c.main_guest_id WHERE $W GROUP BY k ORDER BY n DESC", $P)->fetchAll();
+        $total = array_sum(array_column($o, 'n'));
+        $sec('Where guests are from', [['Group', 'text'], ['Check-ins', 'int'], ['Share', 'pct']], array_map(fn($r) => [$r['k'], (int)$r['n'], $pct($r['n'], $total)], $o));
+        $co = q("SELECT g.country k, COUNT(*) n FROM checkins c JOIN guests g ON g.id=c.main_guest_id WHERE $W AND g.country IS NOT NULL AND g.country<>'' AND NOT ($local) GROUP BY g.country ORDER BY n DESC LIMIT 15", $P)->fetchAll();
+        $sec('Top overseas countries', [['Country', 'text'], ['Check-ins', 'int']], array_map(fn($r) => [$r['k'], (int)$r['n']], $co));
+        $ho = q("SELECT g.hotel k, COUNT(*) n FROM checkins c JOIN guests g ON g.id=c.main_guest_id WHERE $W AND g.hotel IS NOT NULL AND g.hotel<>'' GROUP BY g.hotel ORDER BY n DESC LIMIT 15", $P)->fetchAll();
+        $sec('Top hotels (for partnerships and concierge relationships)', [['Hotel', 'text'], ['Check-ins', 'int']], array_map(fn($r) => [$r['k'], (int)$r['n']], $ho));
+        $rt = q("SELECT COALESCE(SUM(g.visits>1),0) again, COALESCE(SUM(g.visits<=1),0) first FROM checkins c JOIN guests g ON g.id=c.main_guest_id WHERE $W", $P)->fetch();
+        $sec('New and returning guests', [['Group', 'text'], ['Check-ins', 'int'], ['Share', 'pct']], [['First visit', (int)$rt['first'], $pct($rt['first'], $rt['first'] + $rt['again'])], ['Returning guests', (int)$rt['again'], $pct($rt['again'], $rt['first'] + $rt['again'])]]);
+        $summary = [['Check-ins', (int)$total, 'int'], ['Returning guests', $pct($rt['again'], $rt['first'] + $rt['again']), 'pct']];
+    }
+
+    if ($type === 'members') {
+        $c = q('SELECT COUNT(*) total, COALESCE(SUM(expires_on IS NULL OR expires_on >= CURDATE()),0) active, COALESCE(SUM(expires_on < CURDATE()),0) expired,
+                COALESCE(SUM(expires_on BETWEEN CURDATE() AND (CURDATE() + INTERVAL 30 DAY)),0) expiring FROM members WHERE course_id=?', [$cid])->fetch();
+        $rn = q('SELECT first_name, last_name, member_no, mobile, email, expires_on, DATEDIFF(expires_on, CURDATE()) days FROM members
+                 WHERE course_id=? AND expires_on IS NOT NULL AND expires_on <= (CURDATE() + INTERVAL 30 DAY) AND expires_on >= (CURDATE() - INTERVAL 90 DAY) ORDER BY expires_on', [$cid])->fetchAll();
+        $sec('Renewals: expiring in 30 days or lapsed in the last 90 (call list)', [['Name', 'text'], ['Member no.', 'text'], ['Mobile', 'text'], ['Email', 'text'], ['Expires', 'date'], ['Status', 'text']],
+             array_map(fn($r) => [$r['first_name'] . ' ' . $r['last_name'], $r['member_no'], $r['mobile'], $r['email'], $r['expires_on'], (int)$r['days'] < 0 ? 'Lapsed ' . abs((int)$r['days']) . ' days ago' : ((int)$r['days'] === 0 ? 'Expires today' : 'Expires in ' . $r['days'] . ' days')], $rn));
+        $us = q("SELECT m.member_no, CONCAT(m.first_name,' ',m.last_name) name, COUNT(*) rounds, MAX(c.checked_in_at) last_at
+                 FROM checkin_golfers cg JOIN checkins c ON c.id=cg.checkin_id JOIN members m ON m.id=cg.member_id WHERE $W GROUP BY m.id, m.member_no, m.first_name, m.last_name ORDER BY rounds DESC LIMIT 50", $P)->fetchAll();
+        $sec('Most active members this period', [['Member no.', 'text'], ['Name', 'text'], ['Rounds', 'int'], ['Last played', 'datetime']], array_map(fn($r) => [$r['member_no'], $r['name'], (int)$r['rounds'], $r['last_at']], $us));
+        $in = q("SELECT m.member_no, CONCAT(m.first_name,' ',m.last_name) name, m.mobile, m.expires_on FROM members m
+                 WHERE m.course_id=? AND (m.expires_on IS NULL OR m.expires_on >= CURDATE())
+                 AND NOT EXISTS (SELECT 1 FROM checkin_golfers cg JOIN checkins c ON c.id=cg.checkin_id WHERE cg.member_id=m.id AND DATE(c.checked_in_at) BETWEEN ? AND ?) ORDER BY m.last_name, m.first_name LIMIT 200", [$cid, $from, $to])->fetchAll();
+        $sec('Current members who have not played this period (retention)', [['Member no.', 'text'], ['Name', 'text'], ['Mobile', 'text'], ['Expires', 'date']], array_map(fn($r) => [$r['member_no'], $r['name'], $r['mobile'], $r['expires_on']], $in));
+        $mr = q("SELECT COUNT(*) n FROM checkin_golfers cg JOIN checkins c ON c.id=cg.checkin_id WHERE $W AND cg.guest_type='member'", $P)->fetchColumn();
+        $gl = q("SELECT COUNT(*) n FROM checkin_golfers cg JOIN checkins c ON c.id=cg.checkin_id WHERE $W", $P)->fetchColumn();
+        $summary = [['Members on the list', (int)$c['total'], 'int'], ['Current', (int)$c['active'], 'int'], ['Expiring in 30 days', (int)$c['expiring'], 'int'], ['Expired', (int)$c['expired'], 'int'], ['Member share of golfers', $pct($mr, $gl), 'pct']];
+    }
+
+    if ($type === 'incidents') {
+        $iss = q("SELECT c.checked_in_at, CONCAT(g.first_name,' ',g.last_name) guest, ca.name cart, c.return_condition, c.return_note FROM checkins c JOIN guests g ON g.id=c.main_guest_id
+                  LEFT JOIN assets ca ON ca.id=c.cart_id WHERE $W AND c.return_condition IN ('damaged','warning') ORDER BY c.id DESC LIMIT 200", $P)->fetchAll();
+        $sec('Damage and patron warnings', [['When', 'datetime'], ['Guest', 'text'], ['Cart', 'text'], ['Type', 'text'], ['Notes', 'text']], array_map(fn($r) => [$r['checked_in_at'], $r['guest'], $r['cart'], $r['return_condition'], $r['return_note']], $iss));
+        $mf = q("SELECT u.name, COUNT(*) n FROM checkins c JOIN users u ON u.id=c.staff_id WHERE $W AND c.fee_status='member' GROUP BY u.id, u.name ORDER BY n DESC", $P)->fetchAll();
+        $sec('Member (no-fee) check-ins by staff member: look for unusual patterns', [['Staff', 'text'], ['Member check-ins', 'int']], array_map(fn($r) => [$r['name'], (int)$r['n']], $mf));
+        $op = q("SELECT c.checked_in_at, CONCAT(g.first_name,' ',g.last_name) guest, ca.name cart, u.name staff FROM checkins c JOIN guests g ON g.id=c.main_guest_id JOIN users u ON u.id=c.staff_id
+                 LEFT JOIN assets ca ON ca.id=c.cart_id WHERE c.course_id=? AND c.returned_at IS NULL AND DATE(c.checked_in_at) < CURDATE() ORDER BY c.checked_in_at", [$cid])->fetchAll();
+        $sec('Still not returned from an earlier day (check these)', [['Checked in', 'datetime'], ['Guest', 'text'], ['Cart', 'text'], ['Checked in by', 'text']], array_map(fn($r) => [$r['checked_in_at'], $r['guest'], $r['cart'], $r['staff']], $op));
+        $u18 = (int)q("SELECT COUNT(*) FROM checkin_golfers cg JOIN checkins c ON c.id=cg.checkin_id WHERE $W AND cg.guardian_name IS NOT NULL", $P)->fetchColumn();
+        $summary = [['Damage / warnings', count($iss), 'int'], ['Not returned from earlier days', count($op), 'int'], ['Under-18 golfers (guardian signed)', $u18, 'int']];
+    }
+
+    if ($type === 'trends') {
+        $tr = q("SELECT DATE_FORMAT(c.checked_in_at, '%Y-%m') ym, COUNT(*) rounds, SUM($golfers) golfers, SUM(c.hire_fee) hire, SUM(c.fee_status='member') member_rounds,
+                 SUM(CASE WHEN g.country IS NOT NULL AND g.country<>'' AND NOT ($local) THEN 1 ELSE 0 END) overseas
+                 FROM checkins c JOIN guests g ON g.id=c.main_guest_id WHERE c.course_id=? AND c.checked_in_at >= DATE_FORMAT(CURDATE() - INTERVAL 11 MONTH, '%Y-%m-01')
+                 GROUP BY ym ORDER BY ym", [$cid])->fetchAll();
+        $sec('Month by month', [['Month', 'text'], ['Check-ins', 'int'], ['Golfers', 'int'], ['Hire total', 'money'], ['Member check-ins', 'int'], ['Overseas share', 'pct']],
+             array_map(fn($r) => [$r['ym'], (int)$r['rounds'], (int)$r['golfers'], (float)$r['hire'], (int)$r['member_rounds'], $pct($r['overseas'], $r['rounds'])], $tr));
+        $summary = [['Months with data', count($tr), 'int']];
+    }
+
+    return ['type' => $type, 'title' => $titles[$type], 'from' => $from, 'to' => $to, 'summary' => $summary, 'sections' => $sections];
 }

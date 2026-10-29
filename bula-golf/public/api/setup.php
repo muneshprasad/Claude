@@ -25,7 +25,7 @@ if ((int)$pdo->query('SELECT COUNT(*) FROM users')->fetchColumn() > 0) { exit('<
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $un = strtolower(trim((string)$_POST['username'])); $pw = (string)$_POST['password']; $name = trim((string)$_POST['name']);
     if (!preg_match('/^[a-z0-9._-]{3,50}$/', $un) || strlen($pw) < 8 || $name === '') exit('<p>Username 3+ chars, name required, password 8+ chars. Go back and try again.</p>');
-    q('INSERT INTO users (username,name,role,pass_hash) VALUES (?,?,?,?)', [$un, $name, 'manager', password_hash($pw, PASSWORD_DEFAULT)]);
+    q('INSERT INTO users (username,name,role,pass_hash) VALUES (?,?,?,?)', [$un, $name, 'admin', password_hash($pw, PASSWORD_DEFAULT)]);
     // starter fleet: 65 carts and 40 hire sets (rename, set fees and descriptions in Settings)
     // (starter sizes are a guess; set the real numbers in Settings)
     foreach ([[1, 65, 40], [2, 40, 30]] as [$course, $nCarts, $nClubs]) {
