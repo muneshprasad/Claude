@@ -8,7 +8,7 @@ const courseName = (id = CID) => COURSES.find(c => c.id == id)?.name || COURSE;
 const courseFull = (id = CID) => { const c = COURSES.find(x => x.id == id); return c?.full_name || c?.name || COURSE; };
 const courseLogoUrl = c => `${API}?r=course/logo&id=${c.id}&v=${c.logo_v || 0}`;
 /** Hire extras this course offers (set per course by head office; Natadola has no tennis). */
-const feat = (id = CID) => { const c = COURSES.find(x => x.id == id) || {}; return { tennis: +c.tennis === 1, shoes: +c.shoes === 1 }; };
+const feat = (id = CID) => { const c = COURSES.find(x => x.id == id) || {}; return { tennis: +c.tennis === 1, shoes: +c.shoes === 1, room: +c.room_charge === 1 }; };
 /** A login locked to one course uses it; head office remembers the last course picked on this device. */
 function pickCourse() {
   const saved = +store.get('bula_course');
@@ -207,7 +207,7 @@ async function assetStep() {
     const off = a.status !== 'available';
     return `<div class="tile ${off ? 'off' : ''} ${sel === a.id ? 'sel' : ''} ${key === 'cart' && sug?.id === a.id && sel !== a.id ? 'sug' : ''}" data-k="${key}" data-id="${a.id}" ${off ? 'data-off="1"' : ''}>${esc(a.name)}<small>${esc(a.description || '')} ${money(a.fee)}${off ? '<br>' + esc(a.status.replace('_', ' ')) : ''}${a.gps_battery != null && !off ? ' · 🔋' + a.gps_battery + '%' : ''}</small></div>`;
   }).join('') || '<span class="mut">None set up</span>';
-  const hasHotel = W.golfers.some(g => g.hotel);
+  const hasHotel = feat().room && W.golfers.some(g => g.hotel); // room charging: only where head office enabled it, and only with a hotel
   if (!hasHotel && W.fee === 'room') W.fee = 'unpaid';
   const allMem = W.golfers.length > 0 && W.golfers.every(g => g.member_ok);
   if (!allMem && W.fee === 'member') W.fee = 'unpaid'; else if (allMem && W.fee === 'unpaid') W.fee = 'member';
@@ -485,9 +485,9 @@ async function coursesPane() {
       <label class="upl">Upload logo<input class="lf" type="file" accept="image/*" hidden></label>${+c.has_logo ? '<button class="rl" type="button">Remove</button>' : ''}</td>
     <td><label>Short name (switcher, tabs)</label><input class="n" value="${esc(c.name)}" placeholder="e.g. Natadola">
       <label>Full name (header, guest screens)</label><input class="fn" value="${esc(c.full_name || '')}" placeholder="e.g. Natadola Bay Golf Course"></td>
-    <td><label><input class="tn" type="checkbox" ${+c.tennis ? 'checked' : ''}> Tennis hire</label><label><input class="sh" type="checkbox" ${+c.shoes ? 'checked' : ''}> Shoe hire</label><label><input class="ac" type="checkbox" ${c.active === undefined || +c.active ? 'checked' : ''}> Active</label></td>
+    <td><label><input class="tn" type="checkbox" ${+c.tennis ? 'checked' : ''}> Tennis hire</label><label><input class="sh" type="checkbox" ${+c.shoes ? 'checked' : ''}> Shoe hire</label><label><input class="rc" type="checkbox" ${+c.room_charge ? 'checked' : ''}> Charge to room</label><label><input class="ac" type="checkbox" ${c.active === undefined || +c.active ? 'checked' : ''}> Active</label></td>
     <td><button class="sv p">${c.id ? 'Save' : 'Add'}</button>${c.id ? ` <button class="setup" data-c="${c.id}">Set up fleet →</button>` : ''}</td></tr>`;
-  $('#pane').innerHTML = `<div class="card"><h2>Courses</h2><p class="mut">Each course has its own carts, club sets, member list, check-ins, terms and dashboard. The <b>logo</b> and <b>full name</b> show in the tablet header. <b>Tennis hire</b> and <b>Shoe hire</b> switch those extras on for a course (Natadola has no tennis). A new course starts with no fleet: use "Set up fleet".</p><table>${[...COURSES, { name: '' }].map(row).join('')}</table></div>`;
+  $('#pane').innerHTML = `<div class="card"><h2>Courses</h2><p class="mut">Each course has its own carts, club sets, member list, check-ins, terms and dashboard. The <b>logo</b> and <b>full name</b> show in the tablet header. <b>Tennis hire</b>, <b>Shoe hire</b> and <b>Charge to room</b> switch those extras on for a course (Natadola has no tennis). Room charging is off until you tick it, and then only appears for guests who give a hotel. A new course starts with no fleet: use "Set up fleet".</p><table>${[...COURSES, { name: '' }].map(row).join('')}</table></div>`;
   document.querySelectorAll('button.setup').forEach(b => b.onclick = () => { CID = +b.dataset.c; store.set('bula_course', CID); settings('fleet'); });
   document.querySelectorAll('input.lf').forEach(inp => inp.onchange = guard(async () => {
     const f = inp.files[0]; if (!f) return;
@@ -497,7 +497,7 @@ async function coursesPane() {
   document.querySelectorAll('button.rl').forEach(b => b.onclick = () => { const tr = b.closest('tr'); tr._logo = ''; tr._rm = true; $('.lg-prev', tr).innerHTML = '<span class="mut">Removed: press Save</span>'; });
   document.querySelectorAll('button.sv').forEach(b => b.onclick = guard(async () => {
     const tr = b.closest('tr');
-    await api('courses/save', { method: 'POST', body: { id: tr.dataset.id || undefined, name: $('.n', tr).value, full_name: $('.fn', tr).value, tennis: $('.tn', tr).checked, shoes: $('.sh', tr).checked, active: $('.ac', tr).checked, logo: tr._logo || '', remove_logo: !!tr._rm } });
+    await api('courses/save', { method: 'POST', body: { id: tr.dataset.id || undefined, name: $('.n', tr).value, full_name: $('.fn', tr).value, tennis: $('.tn', tr).checked, shoes: $('.sh', tr).checked, room_charge: $('.rc', tr).checked, active: $('.ac', tr).checked, logo: tr._logo || '', remove_logo: !!tr._rm } });
     const r = await api('auth/me'); COURSES = r.courses; if (!COURSES.some(c => c.id == CID)) pickCourse();
     toast('Saved'); settings('courses');
   }));

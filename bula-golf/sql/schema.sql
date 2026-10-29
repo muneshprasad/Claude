@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS courses (
   logo_at DATETIME NULL,
   tennis TINYINT(1) NOT NULL DEFAULT 0,   -- course hires tennis racquets / tennis shoes
   shoes TINYINT(1) NOT NULL DEFAULT 0,    -- course hires golf shoes
+  room_charge TINYINT(1) NOT NULL DEFAULT 0,   -- guests can have fees charged to their hotel room (head office switches this on)
   active TINYINT(1) NOT NULL DEFAULT 1,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

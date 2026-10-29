@@ -23,7 +23,7 @@ try {
         }
         q('DELETE FROM login_attempts WHERE username=?', [$u]);
         $me = ['id' => (int)$row['id'], 'name' => $row['name'], 'role' => $row['role']];
-        $courses = q('SELECT id,name,full_name,tennis,shoes,(logo IS NOT NULL) AS has_logo,UNIX_TIMESTAMP(logo_at) AS logo_v FROM courses WHERE active=1 ORDER BY id')->fetchAll();
+        $courses = q('SELECT id,name,full_name,tennis,shoes,room_charge,(logo IS NOT NULL) AS has_logo,UNIX_TIMESTAMP(logo_at) AS logo_v FROM courses WHERE active=1 ORDER BY id')->fetchAll();
         $meOut = $me + ['course_id' => $row['course_id'] === null ? null : (int)$row['course_id']];
         audit((int)$row['id'], 'login');
         if (!empty($b['app'])) { // mobile app: issue a token instead of a cookie session
@@ -45,7 +45,7 @@ try {
         $u = user();
         $c = cfg();
         out(['user' => $u ? $u + ['course_id' => user_course_id($u)] : null, 'currency' => $c['currency'], 'course' => $c['course_name'],
-              'courses' => $u ? q('SELECT id,name,full_name,tennis,shoes,(logo IS NOT NULL) AS has_logo,UNIX_TIMESTAMP(logo_at) AS logo_v FROM courses WHERE active=1 ORDER BY id')->fetchAll() : []]);
+              'courses' => $u ? q('SELECT id,name,full_name,tennis,shoes,room_charge,(logo IS NOT NULL) AS has_logo,UNIX_TIMESTAMP(logo_at) AS logo_v FROM courses WHERE active=1 ORDER BY id')->fetchAll() : []]);
     }
 
     // ---------- guests ----------
@@ -198,6 +198,7 @@ try {
         $cartId = !empty($b['cart_id']) ? (int)$b['cart_id'] : null;
         $clubsId = !empty($b['clubs_id']) ? (int)$b['clubs_id'] : null;
         $course = course_id($u);
+        if ($fee === 'room' && !(int)q('SELECT room_charge FROM courses WHERE id=?', [$course])->fetchColumn()) fail(422, 'Charge to room is not enabled for this course');
         $terms = (int)terms_for($course)['version'];
         $itemIds = array_values(array_unique(array_map('intval', is_array($b['items'] ?? null) ? $b['items'] : [])));
         if (count($itemIds) > 12) fail(422, 'Too many hire items');
@@ -383,10 +384,10 @@ try {
         $u = require_admin();
         $b = body();
         $name = clean($b['name'] ?? null, 80) ?? fail(422, 'Name required');
-        $tennis = empty($b['tennis']) ? 0 : 1; $shoes = empty($b['shoes']) ? 0 : 1;
+        $tennis = empty($b['tennis']) ? 0 : 1; $shoes = empty($b['shoes']) ? 0 : 1; $room = empty($b['room_charge']) ? 0 : 1;
         $full = clean($b['full_name'] ?? null, 150);
-        if (!empty($b['id'])) { $cid = (int)$b['id']; q('UPDATE courses SET name=?, full_name=?, tennis=?, shoes=?, active=? WHERE id=?', [$name, $full, $tennis, $shoes, empty($b['active']) && isset($b['active']) ? 0 : 1, $cid]); }
-        else { q('INSERT INTO courses (name, full_name, tennis, shoes) VALUES (?,?,?,?)', [$name, $full, $tennis, $shoes]); $cid = (int)db()->lastInsertId(); }
+        if (!empty($b['id'])) { $cid = (int)$b['id']; q('UPDATE courses SET name=?, full_name=?, tennis=?, shoes=?, room_charge=?, active=? WHERE id=?', [$name, $full, $tennis, $shoes, $room, empty($b['active']) && isset($b['active']) ? 0 : 1, $cid]); }
+        else { q('INSERT INTO courses (name, full_name, tennis, shoes, room_charge) VALUES (?,?,?,?,?)', [$name, $full, $tennis, $shoes, $room]); $cid = (int)db()->lastInsertId(); }
         $logo = (string)($b['logo'] ?? '');
         if ($logo !== '') {
             if (!preg_match('#^data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$#', $logo) || strlen($logo) > 700000) fail(422, 'Logo must be a PNG, JPEG or WebP image under about 500 KB');
