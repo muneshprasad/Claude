@@ -347,6 +347,9 @@ try {
                 'holes' => q("SELECT c.holes k, COUNT(*) n FROM checkins c WHERE $since GROUP BY c.holes")->fetchAll(),
                 'fee' => q("SELECT c.fee_status k, COUNT(*) n, SUM(c.hire_fee) amt FROM checkins c WHERE $since GROUP BY c.fee_status")->fetchAll(),
             ],
+            'origin' => q("SELECT CASE WHEN g.country IS NULL OR g.country='' THEN 'unknown' WHEN LOWER(g.country) IN ('fiji','fijian','fiji islands') THEN 'local' ELSE 'overseas' END k, COUNT(*) n
+                           FROM checkins c JOIN guests g ON g.id=c.main_guest_id WHERE $since GROUP BY k")->fetchAll(),
+            'countries' => q("SELECT g.country name, COUNT(*) n FROM checkins c JOIN guests g ON g.id=c.main_guest_id WHERE $since AND g.country IS NOT NULL AND g.country<>'' AND LOWER(g.country) NOT IN ('fiji','fijian','fiji islands') GROUP BY g.country ORDER BY n DESC LIMIT 5")->fetchAll(),
             'hotels' => q("SELECT g.hotel name, COUNT(*) n FROM checkins c JOIN guests g ON g.id=c.main_guest_id WHERE $since AND g.hotel IS NOT NULL AND g.hotel<>'' GROUP BY g.hotel ORDER BY n DESC LIMIT 5")->fetchAll(),
             'fleet' => $fleet,
             'out' => checkin_rows('c.course_id=? AND c.returned_at IS NULL', [$cid]),

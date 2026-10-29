@@ -97,8 +97,10 @@ function golferForm(g = {}) {
    <div><label>Member number <span class="mut">(members only)</span></label><input id="mno" value="${esc(g.member_no)}" autocapitalize="characters"></div></div>
    <div id="found"></div><div id="mstat"></div>
    <div class="row"><div><label>First name *</label><input id="fn" value="${esc(g.first_name)}"></div><div><label>Last name *</label><input id="ln" value="${esc(g.last_name)}"></div></div>
-   <div class="row"><div><label>Email</label><input id="em" type="email" value="${esc(g.email)}"></div><div><label>Country</label><input id="co" value="${esc(g.country)}"></div></div>
-   <div class="row"><div><label>Hotel / where staying</label><input id="ho" value="${esc(g.hotel ?? main?.hotel ?? '')}"></div><div><label>Room number</label><input id="ro" value="${esc(g.room ?? main?.room ?? '')}"></div></div>
+   <div class="row"><div><label>Email</label><input id="em" type="email" value="${esc(g.email)}"></div>
+   <div><label>Where are they from?</label><select id="orig"><option value="overseas">Overseas visitor</option><option value="local">Fiji resident</option></select></div></div>
+   <div id="ovr"><div class="row"><div><label>Country</label><input id="co" value="${esc(g.country ?? main?.country)}"></div><div><label>Hotel / where staying</label><input id="ho" value="${esc(g.hotel ?? main?.hotel ?? '')}"></div></div>
+   <label>Room number</label><input id="ro" value="${esc(g.room ?? main?.room ?? '')}" style="max-width:320px"></div>
    <label>Date of birth (needed for under-18s)</label><input id="dob" type="date" value="${esc(g.dob)}" style="max-width:320px">
    <div id="guard" class="hide"></div>
    <label class="chk"><input id="mk" type="checkbox" ${g.marketing_optin ? 'checked' : ''}> Happy to receive offers and news from ${esc(courseFull())}</label>
@@ -107,6 +109,9 @@ function golferForm(g = {}) {
    'Check-in', () => W.golfers.length ? (W.golfers.pop(), golferForm()) : home());
 
   let list = [], MEM = null, memberAsked = false;
+  const isFiji = c => /^fiji/i.test(String(c || '').trim());
+  const toggleOrig = () => { const loc = $('#orig').value === 'local'; $('#ovr').style.display = loc ? 'none' : ''; if (loc) $('#co').value = 'Fiji'; else if (isFiji($('#co').value)) $('#co').value = ''; };
+  $('#orig').value = isFiji(g.country ?? main?.country) ? 'local' : 'overseas'; $('#orig').onchange = toggleOrig; toggleOrig();
   const same = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
   /** Where this golfer stands against the course's member list. The server re-checks all of this when the check-in is saved. */
   const mstate = () => {
@@ -125,7 +130,7 @@ function golferForm(g = {}) {
       <label class="chk"><input type="checkbox" id="mcard"> I have seen their member card or photo ID</label>`;
   };
   const fillMember = () => { $('#fn').value = MEM.first_name; $('#ln').value = MEM.last_name; if (!$('#em').value) $('#em').value = MEM.email || ''; if (!$('#mobile').value) $('#mobile').value = MEM.mobile || ''; if (MEM.member_no) $('#mno').value = MEM.member_no; renderMember(); };
-  const fill = x => { $('#fn').value = x.first_name; $('#ln').value = x.last_name; $('#em').value = x.email || ''; $('#co').value = x.country || ''; $('#ho').value = x.hotel || $('#ho').value; $('#ro').value = x.room || $('#ro').value; $('#dob').value = x.dob || ''; $('#mk').checked = !!+x.marketing_optin; $('#found').innerHTML = ''; renderMember(); };
+  const fill = x => { $('#fn').value = x.first_name; $('#ln').value = x.last_name; $('#em').value = x.email || ''; $('#co').value = x.country || ''; $('#orig').value = isFiji(x.country) ? 'local' : 'overseas'; toggleOrig(); $('#ho').value = x.hotel || $('#ho').value; $('#ro').value = x.room || $('#ro').value; $('#dob').value = x.dob || ''; $('#mk').checked = !!+x.marketing_optin; $('#found').innerHTML = ''; renderMember(); };
   const lookup = guard(async () => {
     const m = $('#mobile').value, no = $('#mno').value.trim();
     if (m.replace(/\D/g, '').length < 6 && !no) return;
@@ -143,8 +148,8 @@ function golferForm(g = {}) {
   const read = () => {
     const s = mstate();
     return {
-      mobile: $('#mobile').value.trim(), member_no: $('#mno').value.trim(), first_name: $('#fn').value.trim(), last_name: $('#ln').value.trim(), email: $('#em').value.trim(), country: $('#co').value.trim(),
-      hotel: $('#ho').value.trim(), room: $('#ro').value.trim(), dob: $('#dob').value, marketing_optin: $('#mk').checked, guardian_name: $('#gd')?.value.trim() || '',
+      mobile: $('#mobile').value.trim(), member_no: $('#mno').value.trim(), first_name: $('#fn').value.trim(), last_name: $('#ln').value.trim(), email: $('#em').value.trim(), country: $('#orig').value === 'local' ? 'Fiji' : $('#co').value.trim(),
+      hotel: $('#orig').value === 'local' ? '' : $('#ho').value.trim(), room: $('#orig').value === 'local' ? '' : $('#ro').value.trim(), dob: $('#dob').value, marketing_optin: $('#mk').checked, guardian_name: $('#gd')?.value.trim() || '',
       card_checked: !!$('#mcard')?.checked, member_ok: !!(s.found && s.nameOk && !s.expired && $('#mcard')?.checked),
     };
   };
@@ -202,6 +207,8 @@ async function assetStep() {
     const off = a.status !== 'available';
     return `<div class="tile ${off ? 'off' : ''} ${sel === a.id ? 'sel' : ''} ${key === 'cart' && sug?.id === a.id && sel !== a.id ? 'sug' : ''}" data-k="${key}" data-id="${a.id}" ${off ? 'data-off="1"' : ''}>${esc(a.name)}<small>${esc(a.description || '')} ${money(a.fee)}${off ? '<br>' + esc(a.status.replace('_', ' ')) : ''}${a.gps_battery != null && !off ? ' · 🔋' + a.gps_battery + '%' : ''}</small></div>`;
   }).join('') || '<span class="mut">None set up</span>';
+  const hasHotel = W.golfers.some(g => g.hotel);
+  if (!hasHotel && W.fee === 'room') W.fee = 'unpaid';
   const allMem = W.golfers.length > 0 && W.golfers.every(g => g.member_ok);
   if (!allMem && W.fee === 'member') W.fee = 'unpaid'; else if (allMem && W.fee === 'unpaid') W.fee = 'member';
   const ft = feat(), shoes = ft.shoes ? assets.filter(a => a.kind === 'shoes') : [], tennis = ft.tennis ? assets.filter(a => a.kind === 'racquet') : [];
@@ -218,7 +225,7 @@ async function assetStep() {
     ${ft.tennis ? `<h3>Tennis hire <span class="mut">— racquets and tennis shoes</span></h3><div class="grid">${multi(tennis)}</div>` : ''}
     <label>Bag number(s)</label><input id="bags" placeholder="e.g. 12, 14" value="${esc(W.bags)}">
     <div class="row"><div><label>Holes</label><select id="holes"><option>18</option><option ${W.holes === 9 ? 'selected' : ''}>9</option></select></div>
-    <div><label>Green fee</label><select id="fee">${allMem ? `<option value="member" ${W.fee === 'member' ? 'selected' : ''}>Member: no green fee</option>` : ''}<option value="unpaid" ${W.fee === 'unpaid' ? 'selected' : ''}>Collect at end</option><option value="paid" ${W.fee === 'paid' ? 'selected' : ''}>Paid</option><option value="room" ${W.fee === 'room' ? 'selected' : ''}>Charge to room</option></select></div></div>
+    <div><label>Green fee</label><select id="fee">${allMem ? `<option value="member" ${W.fee === 'member' ? 'selected' : ''}>Member: no green fee</option>` : ''}<option value="unpaid" ${W.fee === 'unpaid' ? 'selected' : ''}>Collect at end</option><option value="paid" ${W.fee === 'paid' ? 'selected' : ''}>Paid</option>${hasHotel ? `<option value="room" ${W.fee === 'room' ? 'selected' : ''}>Charge to room</option>` : ''}</select></div></div>
     <div class="row"><div><label>Tee time</label><input id="tee" type="time" value="${esc(W.tee)}"></div><div><label>Notes</label><input id="notes" value="${esc(W.notes)}"></div></div>
     <h3 id="tot"></h3>
     </div><div class="bar"><button class="p" id="done">✔ Complete check-in</button></div>`, 'Cart & clubs', () => signStep(W.golfers.length - 1));
@@ -361,6 +368,8 @@ async function courseHtml() {
    <div class="two">
     <div class="card"><h2>Mix <span class="mut">${label.toLowerCase()}</span></h2>
      ${meter('18 holes', +holes[18] || 0, tot)}${meter('9 holes', +holes[9] || 0, tot)}
+     <h3>Guests from</h3>${(() => { const o = Object.fromEntries((d.origin || []).map(x => [x.k, +x.n])); return meter('Fiji residents', o.local || 0, p.rounds) + meter('Overseas visitors', o.overseas || 0, p.rounds) + (o.unknown ? meter('Not recorded', o.unknown, p.rounds) : ''); })()}
+     ${(d.countries || []).length ? d.countries.map(x => meter(esc(x.name), +x.n, +d.countries[0].n, x.n)).join('') : ''}
      <h3>Green fee</h3>${[['paid', 'Paid'], ['room', 'Charged to room'], ['member', 'Member: no green fee'], ['unpaid', 'Collect at end']].map(([k, l]) => meter(l, +fee[k]?.n || 0, p.rounds, `${+fee[k]?.n || 0} · ${money0(fee[k]?.amt)}`)).join('')}
      ${d.hotels.length ? `<h3>Top hotels</h3>${d.hotels.map(h => meter(esc(h.name), +h.n, +d.hotels[0].n, h.n)).join('')}` : ''}</div>
     <div class="card"><h2>Recent damage &amp; warnings</h2>${d.issues.length ? d.issues.map(i => `<p><span class="tag ${i.return_condition === 'damaged' ? 'r' : 'o'}">${i.return_condition}</span> <b>${esc(i.guest)}</b> · ${fmtDT(i.checked_in_at)}<br><span class="mut">${esc(i.return_note || '')}</span></p>`).join('') : '<p class="mut">None 🎉</p>'}</div>
