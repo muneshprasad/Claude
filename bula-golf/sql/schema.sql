@@ -115,6 +115,8 @@ CREATE TABLE IF NOT EXISTS checkin_golfers (
   guardian_name VARCHAR(120) NULL,        -- set when golfer is under 18
   guest_type ENUM('guest','member') NOT NULL DEFAULT 'guest',   -- per check-in, so membership is per course
   member_id INT NULL,                     -- matched row in members, when found
+  hotel VARCHAR(150) NULL,                -- as at check-in (guest record holds only the latest)
+  country VARCHAR(80) NULL,
   FOREIGN KEY (checkin_id) REFERENCES checkins(id) ON DELETE CASCADE,
   FOREIGN KEY (guest_id) REFERENCES guests(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -128,6 +130,7 @@ CREATE TABLE IF NOT EXISTS members (
   last_name VARCHAR(80) NOT NULL,
   mobile VARCHAR(30) NULL,
   email VARCHAR(150) NULL,
+  starts_on DATE NULL,                    -- optional: when the current membership year began
   expires_on DATE NULL,                   -- NULL = no expiry recorded
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

@@ -512,8 +512,10 @@ async function accessPane() {
 }
 
 /* ---------------- reports ---------------- */
-const RPT = { type: 'cashup', preset: 'month', from: '', to: '' };
+const RPT = { type: 'playmix', preset: 'month', from: '', to: '', scope: 'current' };
 const REPORTS = [
+  ['playmix', 'Golfers: members, resort guests, 9 vs 18', 'How many members, resort guests, residents and other visitors played, 9 or 18 holes, and how many paid'],
+  ['memberyear', 'Member usage over the year', 'Rounds each member played in their membership year (renewal talks, low-use members)'],
   ['cashup', 'Daily cash-up', 'Hire income and what is still to collect, by day and by staff member'],
   ['rounds', 'Rounds & peak times', 'Busiest days and hours, golfers per round, time out on the course'],
   ['fleet', 'Cart & equipment usage', 'How many times each cart and hire item was used, most to least, plus idle and damaged'],
@@ -549,22 +551,24 @@ const reportCSV = d => {
 const reportsScreen = guard(async (opts = {}) => {
   Object.assign(RPT, opts);
   if (!RPT.from) [RPT.from, RPT.to] = presetRange('month');
-  const d = await api('reports/run', { params: { type: RPT.type, from: RPT.from, to: RPT.to } });
-  const trend = RPT.type === 'trends';
+  const d = await api('reports/run', { params: { type: RPT.type, from: RPT.from, to: RPT.to, scope: RPT.scope } });
+  const trend = RPT.type === 'trends', yearly = RPT.type === 'memberyear'; // these two ignore the period
   view(`<div class="card noprint"><h2>Reports · ${esc(courseName())}</h2>
     <div class="rgrid">${REPORTS.map(([k, t, s]) => `<button class="rcard ${RPT.type === k ? 'on' : ''}" data-r="${k}"><b>${t}</b><span>${s}</span></button>`).join('')}</div>
-    <h3>Period</h3>
+    ${yearly ? `<h3>Which members</h3><div class="seg">${[['current', 'All current members'], ['expiring', 'Expiring in 30 days'], ['expired', 'Expired in the last 12 months']].map(([k, l]) => `<button data-s="${k}" class="${RPT.scope === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <p class="mut">Counts each member's rounds from their start date (or 12 months before expiry if there is no start date) up to expiry. Only check-ins where staff verified the member card are counted.</p>` : `<h3>Period</h3>
     <div class="seg">${[['today', 'Today'], ['week', 'This week'], ['lastweek', 'Last week'], ['month', 'This month'], ['last', 'Last month'], ['90', 'Last 90 days']].map(([k, l]) => `<button data-p="${k}" class="${RPT.preset === k ? 'on' : ''}">${l}</button>`).join('')}</div>
     <div class="row"><div><label>From</label><input id="rf" type="date" value="${RPT.from}"></div><div><label>To</label><input id="rt" type="date" value="${RPT.to}"></div></div>
-    <p><button class="p" id="rrun">Run report</button></p></div>
-   <div class="card" id="rout"><div class="rhead"><div><h2>${esc(d.title)}</h2><div class="mut">${esc(courseFull())} · ${trend ? 'last 12 months' : `${fmtD(d.from)} to ${fmtD(d.to)}`}</div></div>
+    <p><button class="p" id="rrun">Run report</button></p>`}</div>
+   <div class="card" id="rout"><div class="rhead"><div><h2>${esc(d.title)}</h2><div class="mut">${esc(courseFull())} · ${trend ? 'last 12 months' : yearly ? 'each member\'s membership year' : `${fmtD(d.from)} to ${fmtD(d.to)}`}</div></div>
      <div class="noprint" style="display:flex;gap:8px;flex-wrap:wrap"><button id="rprint">🖨 Print</button><button id="rcsv">⬇ Save as CSV</button></div></div>
     ${d.summary.length ? `<div class="stats">${d.summary.map(([l, v, t]) => stat0(fmtCell(v, t), l)).join('')}</div>` : ''}
     ${d.sections.map(s => `<h3>${esc(s.title)}</h3>${s.rows.length ? `<table><tr>${s.columns.map(c => `<th${['int', 'money', 'pct', 'mins'].includes(c[1]) ? ' style="text-align:right"' : ''}>${esc(c[0])}</th>`).join('')}</tr>${s.rows.map(r => `<tr${r[0] === 'Total' ? ' style="font-weight:700"' : ''}>${r.map((v, i) => `<td${['int', 'money', 'pct', 'mins'].includes(s.columns[i][1]) ? ' style="text-align:right"' : ''}>${fmtCell(v, s.columns[i][1])}</td>`).join('')}</tr>`).join('')}</table>` : '<p class="mut">Nothing in this period.</p>'}`).join('')}
     <p class="mut noprint" style="margin-top:18px">Figures come from check-ins recorded on the tablets. Hire income is the hire fees recorded at check-in (green-fee rates are not yet part of the system).</p></div>`, 'Reports', home);
   document.querySelectorAll('.rcard').forEach(b => b.onclick = () => reportsScreen({ type: b.dataset.r }));
   document.querySelectorAll('[data-p]').forEach(b => b.onclick = () => { const [f, t] = presetRange(b.dataset.p); reportsScreen({ preset: b.dataset.p, from: f, to: t }); });
-  $('#rrun').onclick = () => reportsScreen({ preset: '', from: $('#rf').value, to: $('#rt').value });
+  document.querySelectorAll('[data-s]').forEach(b => b.onclick = () => reportsScreen({ scope: b.dataset.s }));
+  if ($('#rrun')) $('#rrun').onclick = () => reportsScreen({ preset: '', from: $('#rf').value, to: $('#rt').value });
   $('#rprint').onclick = () => window.print();
   $('#rcsv').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([reportCSV(d)], { type: 'text/csv' })); a.download = `${courseName().toLowerCase().replace(/\W+/g, '-')}-${d.type}-${d.from}-to-${d.to}.csv`; a.click(); };
 });
@@ -669,6 +673,7 @@ function membersFromCSV(text) {
     first_name: ['firstname', 'first', 'givenname', 'forename'], last_name: ['lastname', 'last', 'surname', 'familyname'],
     name: ['name', 'fullname', 'membername', 'member'], mobile: ['mobile', 'mobileno', 'mobilenumber', 'mobilephone', 'phone', 'phoneno', 'phonenumber', 'telephone', 'tel', 'cell', 'contact'],
     email: ['email', 'emailaddress'], expires_on: ['expiry', 'expirydate', 'expires', 'expireson', 'expiration', 'expirationdate', 'renewal', 'renewaldate', 'validuntil', 'validto', 'enddate', 'membershipexpiry'],
+    starts_on: ['startdate', 'start', 'joined', 'joineddate', 'datejoined', 'joindate', 'membershipstart', 'membershipstartdate', 'commenced', 'commencementdate'],
   };
   const heads = rows[0].map(key), col = {};
   for (const [f, names] of Object.entries(WANT)) { const i = heads.findIndex(h => names.includes(h)); if (i >= 0) col[f] = i; }
@@ -680,10 +685,11 @@ function membersFromCSV(text) {
     const g = f => col[f] === undefined ? '' : String(r[col[f]] ?? '').trim();
     let first = g('first_name'), last = g('last_name');
     if ((!first || !last) && g('name')) { const nm = g('name'); if (nm.includes(',')) { [last, first] = nm.split(',').map(s => s.trim()); } else { const p = nm.split(/\s+/); last = p.length > 1 ? p.pop() : ''; first = p.join(' '); } }
-    const dt = parseDate(g('expires_on'));
+    const dt = parseDate(g('expires_on')), sd = parseDate(g('starts_on'));
     if (!first || !last) { problems.push(`Row ${i + 2}: needs a first and last name`); return; }
     if (!dt.ok) { problems.push(`Row ${i + 2} (${first} ${last}): can't read the expiry date "${g('expires_on')}"`); return; }
-    members.push({ member_no: g('member_no'), first_name: first, last_name: last, mobile: g('mobile'), email: g('email'), expires_on: dt.val });
+    if (!sd.ok) { problems.push(`Row ${i + 2} (${first} ${last}): can't read the start date "${g('starts_on')}"`); return; }
+    members.push({ member_no: g('member_no'), first_name: first, last_name: last, mobile: g('mobile'), email: g('email'), starts_on: sd.val, expires_on: dt.val });
   });
   return { members, problems };
 }
@@ -692,26 +698,26 @@ async function membersPane() {
   const d = await api('members/list', { params: { q: MP.q, status: MP.status } }), c = d.counts, today = isoDay(new Date());
   const stat = m => { if (!m.expires_on) return ['No expiry', 'tag']; const dl = Math.round((new Date(m.expires_on + 'T00:00') - new Date(today + 'T00:00')) / 864e5); return dl < 0 ? ['Expired', 'tag r'] : dl <= 30 ? [`Expires in ${dl}d`, 'tag o'] : ['Current', 'tag']; };
   const row = m => `<tr data-id="${m.id || ''}"><td><input class="mn" value="${esc(m.member_no || '')}" placeholder="No." style="width:90px"></td><td><input class="mf" value="${esc(m.first_name)}" placeholder="First"></td><td><input class="ml" value="${esc(m.last_name)}" placeholder="Last"></td>
-    <td><input class="mm" value="${esc(m.mobile || '')}" placeholder="Mobile" style="width:120px"></td><td><input class="me" value="${esc(m.email || '')}" placeholder="Email"></td><td><input class="mx" type="date" value="${esc(m.expires_on || '')}"></td>
+    <td><input class="mm" value="${esc(m.mobile || '')}" placeholder="Mobile" style="width:120px"></td><td><input class="me" value="${esc(m.email || '')}" placeholder="Email"></td><td><input class="ms" type="date" value="${esc(m.starts_on || '')}"></td><td><input class="mx" type="date" value="${esc(m.expires_on || '')}"></td>
     <td>${m.id ? `<span class="${stat(m)[1]}">${stat(m)[0]}</span>` : ''}</td><td style="white-space:nowrap"><button class="sv p">${m.id ? 'Save' : 'Add'}</button>${m.id ? ' <button class="d dl">Delete</button>' : ''}</td></tr>`;
   $('#pane').innerHTML = `
    <div class="stats">${stat0(c.total, 'Members', courseName())}${stat0(c.active, 'Current')}${stat0(c.expiring, 'Expiring in 30 days')}${stat0(c.expired, 'Expired')}</div>
    <div class="card"><h2>Upload member list · ${esc(courseName())}</h2>
-    <p class="mut">Export your member list from Excel as <b>CSV</b> and upload it here. The first row must be headings: <b>Member no</b>, <b>First name</b>, <b>Last name</b>, <b>Mobile</b>, <b>Email</b>, <b>Expiry date</b> (a single <b>Name</b> column also works). Dates are read day first, e.g. 30/06/2027. Nothing is saved until you press Import.</p>
+    <p class="mut">Export your member list from Excel as <b>CSV</b> and upload it here. The first row must be headings: <b>Member no</b>, <b>First name</b>, <b>Last name</b>, <b>Mobile</b>, <b>Email</b>, <b>Start date</b> (optional: when this membership year began), <b>Expiry date</b> (a single <b>Name</b> column also works). Dates are read day first, e.g. 30/06/2027. Nothing is saved until you press Import.</p>
     <p><button id="tpl">⬇ Download a template</button></p>
     <input id="mf" type="file" accept=".csv,text/csv,text/plain">
     <div id="prev"></div></div>
    <div class="card"><h2>Member list</h2>
     <div class="row"><div><input id="mq" type="search" placeholder="Search name, member no. or mobile" value="${esc(MP.q)}"></div>
     <div><select id="ms">${[['all', 'All members'], ['active', 'Current'], ['expiring', 'Expiring in 30 days'], ['expired', 'Expired']].map(([v, l]) => `<option value="${v}" ${MP.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div></div>
-    <table><tr><th>No.</th><th>First</th><th>Last</th><th>Mobile</th><th>Email</th><th>Expiry</th><th>Status</th><th></th></tr>${row({ first_name: '', last_name: '' })}${d.members.map(row).join('')}</table>
+    <table><tr><th>No.</th><th>First</th><th>Last</th><th>Mobile</th><th>Email</th><th>Joined</th><th>Expiry</th><th>Status</th><th></th></tr>${row({ first_name: '', last_name: '' })}${d.members.map(row).join('')}</table>
     ${d.members.length >= 300 ? '<p class="mut">Showing the first 300. Use search to find others.</p>' : ''}</div>`;
   const reload = () => membersPane();
   $('#mq').onchange = e => { MP.q = e.target.value.trim(); reload(); };
   $('#ms').onchange = e => { MP.status = e.target.value; reload(); };
   document.querySelectorAll('button.sv').forEach(b => b.onclick = guard(async () => {
     const tr = b.closest('tr');
-    await api('members/save', { method: 'POST', body: { id: tr.dataset.id || undefined, member_no: $('.mn', tr).value, first_name: $('.mf', tr).value, last_name: $('.ml', tr).value, mobile: $('.mm', tr).value, email: $('.me', tr).value, expires_on: $('.mx', tr).value || null } });
+    await api('members/save', { method: 'POST', body: { id: tr.dataset.id || undefined, member_no: $('.mn', tr).value, first_name: $('.mf', tr).value, last_name: $('.ml', tr).value, mobile: $('.mm', tr).value, email: $('.me', tr).value, starts_on: $('.ms', tr).value || null, expires_on: $('.mx', tr).value || null } });
     toast('Saved'); reload();
   }));
   document.querySelectorAll('button.dl').forEach(b => b.onclick = guard(async () => {
@@ -719,7 +725,7 @@ async function membersPane() {
     await api('members/delete', { method: 'POST', body: { id: +tr.dataset.id } }); toast('Deleted'); reload();
   }));
   $('#tpl').onclick = () => {
-    const blob = new Blob(['Member no,First name,Last name,Mobile,Email,Expiry date\r\nM001,Jane,Smith,7001234,jane@example.com,30/06/2027\r\n'], { type: 'text/csv' });
+    const blob = new Blob(['Member no,First name,Last name,Mobile,Email,Start date,Expiry date\r\nM001,Jane,Smith,7001234,jane@example.com,01/07/2026,30/06/2027\r\n'], { type: 'text/csv' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'member-list-template.csv'; a.click();
   };
   $('#mf').onchange = guard(async e => {
