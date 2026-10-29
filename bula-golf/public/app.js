@@ -369,6 +369,31 @@ async function overviewHtml() {
   }).join('')}</div>`;
 }
 
+/* ---------------- live cart pool: carts out on the course ---------------- */
+const POOL = { seen: new Set() }; // carts already shown, so only newly-out carts slide in on a refresh
+const CART_SVG = '<svg class="cart-svg" viewBox="0 0 52 34" aria-hidden="true"><rect class="cbag" x="2" y="9" width="5" height="14" rx="2"/><path class="cr" d="M12 14V5h27l3 9"/><rect class="cb" x="8" y="13" width="36" height="10" rx="4"/><g class="cw"><circle cx="16" cy="27" r="5"/><path d="M16 22v10M11 27h10"/></g><g class="cw"><circle cx="38" cy="27" r="5"/><path d="M38 22v10M33 27h10"/></g></svg>';
+
+/** Estimated position from time since check-in (a 9-hole round is expected to take about 2h15, 18 holes about 4h30). Real GPS positions can replace this later. */
+function cartPool(d) {
+  const carts = d.fleet.filter(a => a.kind === 'cart');
+  const out = d.out.filter(c => c.cart_name);
+  const avail = carts.filter(a => a.status === 'available').length, away = carts.filter(a => !['available', 'out'].includes(a.status)).length;
+  const exp = c => +c.holes === 9 ? 135 : 270, lateAt = c => +c.holes === 9 ? 210 : 360;
+  const items = out.map(c => { const m = mins(c.checked_in_at); return { c, m, p: Math.min(1, m / exp(c)), late: m > lateAt(c) }; }).sort((a, b) => a.p - b.p);
+  const lanes = items.length > 18 ? 4 : 3, late = items.filter(i => i.late).length;
+  const badges = items.map((it, i) => {
+    const x = 5 + it.p * 88, isNew = !POOL.seen.has(it.c.id); POOL.seen.add(it.c.id);
+    const num = esc(it.c.cart_name.replace(/^cart\s*/i, '')), who = `${it.c.guest}${it.c.golfers > 1 ? ' +' + (it.c.golfers - 1) : ''}`;
+    return `<div class="cartb ${it.late ? 'late' : ''} ${isNew ? 'enter' : ''}" style="--x:${x}%;left:${x}%;top:${36 + (i % lanes) * 50}px;--d:${(i % 6) * 0.3}s" title="${esc(it.c.cart_name)} · ${esc(who)} · out ${dur(it.m)}${it.late ? ' · overdue' : ''}">${CART_SVG}<b>${num}</b><small>${dur(it.m)}</small></div>`;
+  }).join('');
+  const dots = Array.from({ length: 18 }, (_, h) => `<i class="${(h + 1) % 3 === 0 || h === 0 ? 'lab' : ''}"><span>${h + 1}</span></i>`).join('');
+  return `<div class="card pool"><div class="pool-head"><h2>Carts on the course <span class="mut">right now</span></h2>
+    <div class="pool-chips"><span class="chip out"><b>${out.length}</b> out</span><span class="chip ok"><b>${avail}</b> in the shed</span>${away ? `<span class="chip off"><b>${away}</b> unavailable</span>` : ''}${late ? `<span class="chip late"><b>${late}</b> overdue</span>` : ''}</div></div>
+    <div class="track" style="height:${lanes * 50 + 80}px"><div class="tflag l"><b>Clubhouse</b><small>start</small></div><div class="tflag r"><b>Clubhouse</b><small>finish</small></div><div class="lane-line"></div>
+      ${out.length ? badges : '<div class="allhome">✔ Every cart is home</div>'}<div class="holes">${dots}</div></div>
+    <p class="mut" style="margin:4px 0 0;font-size:13px">Estimated position from check-in time (nine holes about 2¼ hours, eighteen about 4½). Amber means overdue. Tap a cart to see who has it.</p></div>`;
+}
+
 async function courseHtml() {
   const d = await api('dashboard', { params: { range: DASH.range } });
   const p = d.period, t = d.today, r = DASH.range, label = r === 1 ? 'Today' : `Last ${r} days`;
@@ -380,7 +405,7 @@ async function courseHtml() {
   const late = c => mins(c.checked_in_at) > (+c.holes === 9 ? 210 : 360);
   const tiles = list => list.map(a => `<div class="fl ${a.status}" title="${esc(a.name)} · ${FL[a.status] || a.status}${a.guest ? ' · ' + esc(a.guest) : ''}">${esc(a.name.replace(/^(cart|set|shoes?|racquet)\s*/i, ''))}${a.status === 'out' ? `<small>${dur(mins(a.since))}</small>` : a.gps_battery != null && a.gps_battery < 25 ? '<small>🪫</small>' : ''}</div>`).join('') || '<span class="mut">None set up</span>';
   const legend = list => Object.keys(FL).map(s => [s, list.filter(a => a.status === s).length]).filter(([, n]) => n).map(([s, n]) => `<span class="lg"><i class="fl ${s}"></i>${FL[s]} ${n}</span>`).join('');
-  return `<div class="seg" role="group">${[[1, 'Today'], [7, '7 days'], [30, '30 days']].map(([v, l]) => `<button class="${r === v ? 'on' : ''}" data-range="${v}">${l}</button>`).join('')}<span class="mut">Updated ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · refreshes every 30s</span></div>
+  return `${cartPool(d)}<div class="seg" role="group">${[[1, 'Today'], [7, '7 days'], [30, '30 days']].map(([v, l]) => `<button class="${r === v ? 'on' : ''}" data-range="${v}">${l}</button>`).join('')}<span class="mut">Updated ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · refreshes every 30s</span></div>
    <div class="stats">
      ${stat(p.rounds, 'Check-ins', label)}${stat(p.golfers, 'Golfers', label)}${stat(money0(p.fees), 'Hire revenue', label)}
      ${stat(t.out_now, 'On course now', 'right now')}${stat(`${free}<span class="of"> / ${carts.length}</span>`, 'Carts available')}${stat(money0(p.unpaid), 'Still to collect', 'unpaid hire, ' + label.toLowerCase())}${stat(p.members, 'Member rounds', `of ${p.rounds} check-ins`)}${stat(p.issues, 'Damage / warnings', label)}
