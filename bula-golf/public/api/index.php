@@ -490,7 +490,10 @@ try {
     }
 } catch (PDOException $e) {
     error_log('bulagolf: ' . $e->getMessage());
-    fail(500, 'Database error');
+    // Signed-in admins get the real reason (e.g. a migration not yet run); everyone else just "Database error".
+    $detail = '';
+    try { $who = user(); if ($who && $who['role'] === 'admin') $detail = ': ' . mb_substr(preg_replace('/\s+/', ' ', $e->getMessage()), 0, 300); } catch (Throwable $x) { }
+    fail(500, 'Database error' . $detail);
 }
 
 function checkin_rows(string $where, array $p): array {
