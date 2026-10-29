@@ -1,9 +1,17 @@
 {
-  "name": "Bula Golf Check-in",
-  "short_name": "Bula Golf",
+  "name": "Bula Golf Guest Check-in",
+  "short_name": "Check-in",
+  "description": "Guest check-in, cart and equipment hire for the course counter",
   "start_url": ".",
+  "scope": ".",
   "display": "standalone",
-  "background_color": "#f4f7f4",
-  "theme_color": "#1b6b3a",
-  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+  "orientation": "any",
+  "background_color": "#f6f2ea",
+  "theme_color": "#07271a",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
 }

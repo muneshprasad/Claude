@@ -11,6 +11,7 @@ const courseLogoUrl = c => `${API}?r=course/logo&id=${c.id}&v=${c.logo_v || 0}`;
 const feat = (id = CID) => { const c = COURSES.find(x => x.id == id) || {}; return { tennis: +c.tennis === 1, shoes: +c.shoes === 1, room: +c.room_charge === 1 }; };
 /** A login locked to one course uses it; head office remembers the last course picked on this device. */
 function pickCourse() {
+  if (ME?.course_id) store.set('bula_course', ME.course_id); // so this tablet's sign-in screen shows its own club
   const saved = +store.get('bula_course');
   CID = ME?.course_id || (COURSES.some(c => c.id == saved) ? saved : COURSES[0]?.id || 0);
 }
@@ -42,38 +43,59 @@ const setTimer = (fn, ms = 10000) => { clearInterval(timer); timer = fn ? setInt
 const view = (html, title = '', back = null) => {
   setTimer(null);
   const switcher = ME && !ME.course_id && COURSES.length > 1 ? `<select id="cs" aria-label="Course">${COURSES.map(c => `<option value="${c.id}" ${c.id == CID ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : '';
-  $('#app').innerHTML = `<header><h1>${ME && +COURSES.find(c => c.id == CID)?.has_logo ? `<img class="hlogo" src="${courseLogoUrl(COURSES.find(c => c.id == CID))}" alt="">` : '⛳'} ${esc(ME ? courseFull() : COURSE)}${title ? ' <em>· ' + esc(title) + '</em>' : ''}</h1><div>${switcher}${back ? '<button id="back">← Back</button> ' : ''}${ME ? `<button id="out">${esc(ME.name)} · Sign out</button>` : ''}</div></header><main>${html}</main>`;
+  $('#app').innerHTML = `<header><h1>${ME && +COURSES.find(c => c.id == CID)?.has_logo ? `<img class="hlogo" src="${courseLogoUrl(COURSES.find(c => c.id == CID))}" alt="">` : '<svg class="hflag" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 21V3l11 5-11 5"/><path d="M4 21h9"/></svg>'} ${esc(ME ? courseFull() : COURSE)}${title ? ' <em>· ' + esc(title) + '</em>' : ''}</h1><div>${switcher}${back ? '<button id="back">← Back</button> ' : ''}${ME ? `<button id="out">${esc(ME.name)} · Sign out</button>` : ''}</div></header><main>${html}</main>`;
   if (back) $('#back').onclick = back;
   if (switcher) $('#cs').onchange = e => { CID = +e.target.value; store.set('bula_course', CID); home(); };
   if (ME) $('#out').onclick = guard(async () => { await api('auth/logout', { method: 'POST' }); ME = null; login(); });
   window.scrollTo(0, 0);
 };
 const hireCell = c => `${esc(c.clubs_name) || '—'}${c.items ? `<div class="mut">${esc(c.items)}</div>` : ''}${c.bags ? `<div class="mut">Bag ${esc(c.bags)}</div>` : ''}`;
+/** A counter tablet shouldn't dim mid check-in: hold the screen awake while someone is signed in and the app is on screen (Android Chrome needs HTTPS; ignored elsewhere). */
+let wake = null;
+const keepAwake = async () => { try { if ('wakeLock' in navigator && !wake && !document.hidden && ME) { wake = await navigator.wakeLock.request('screen'); wake.addEventListener('release', () => { wake = null; }); } } catch { /* denied or unsupported: fine */ } };
+document.addEventListener('visibilitychange', () => { if (!document.hidden) keepAwake(); });
 const isMgr = () => ME?.role === 'manager';
 const isAdmin = () => isMgr() && !ME.course_id; // head office: all courses, staff, terms
 
 /* ---------------- login ---------------- */
+const ICON = {
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  ret: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>',
+  list: '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4v2h6V4M9 11h6M9 15h6"/>',
+  chart: '<path d="M5 20v-9M12 20V5M19 20v-7"/><path d="M3 20h18"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/>',
+};
+const ico = n => `<span class="ic"><svg viewBox="0 0 24 24" aria-hidden="true">${ICON[n]}</svg></span>`;
+const greet = () => { const h = new Date().getHours(); return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'; };
+
 function login() {
-  view(`<div class="card" style="max-width:420px;margin:30px auto"><h2>Staff sign in</h2>
-    <label>Username</label><input id="u" autocapitalize="none" autocomplete="username">
-    <label>Password</label><input id="p" type="password" autocomplete="current-password">
-    <p><button class="p" id="go" style="width:100%">Sign in</button></p></div>`);
+  setTimer(null);
+  const saved = COURSES.find(c => c.id == +store.get('bula_course')), shown = saved ? [saved] : COURSES; // a tablet remembers its club
+  const logos = shown.map(c => `<div class="lg-logo">${+c.has_logo ? `<img src="${courseLogoUrl(c)}" alt="${esc(courseFull(c.id))}">` : `<span>${esc(courseFull(c.id))}</span>`}</div>`).join('') || `<div class="lg-logo"><span>${esc(COURSE)}</span></div>`;
+  $('#app').innerHTML = `<div class="lg-wrap"><section class="lg-hero"><div class="lg-logos">${logos}</div><h1>Guest Check-in</h1><div class="lg-rule"></div><p>Golf carts · Club &amp; equipment hire</p></section>
+   <section class="lg-panel"><form class="lg-form" id="lf"><h2>Welcome</h2><p class="sub">Sign in to start checking in guests.</p>
+   <label for="u">Username</label><input id="u" autocapitalize="none" autocomplete="username" autofocus>
+   <label for="p">Password</label><div class="pw"><input id="p" type="password" autocomplete="current-password"><button type="button" id="eye">Show</button></div>
+   <button class="p lg-go" id="go" type="submit">Sign in</button><p class="lg-note">Authorised staff only · sign-ins are recorded</p></form></section></div>`;
+  window.scrollTo(0, 0);
   const go = guard(async () => {
     const r = await api('auth/login', { method: 'POST', body: { username: $('#u').value, password: $('#p').value } });
     ME = r.user; COURSES = r.courses || []; pickCourse(); home();
   });
-  $('#go').onclick = go; $('#p').onkeydown = e => e.key === 'Enter' && go();
+  $('#lf').onsubmit = e => { e.preventDefault(); go(); };
+  $('#eye').onclick = () => { const p = $('#p'), show = p.type === 'password'; p.type = show ? 'text' : 'password'; $('#eye').textContent = show ? 'Hide' : 'Show'; };
 }
 
 /* ---------------- home ---------------- */
 async function home() {
+  keepAwake();
   const [act, ast] = await Promise.all([api('checkins/active'), api('assets')]).catch(() => [{ checkins: [] }, { assets: [] }]);
   const carts = ast.assets.filter(a => a.kind === 'cart'), free = carts.filter(a => a.status === 'available').length;
-  view(`<div class="home">
-   <button class="big wide" id="new"><i>➕</i><div>New check-in<small>${free} of ${carts.length} carts available</small></div></button>
-   <button class="big alt" id="ret"><i>↩</i><div>Return cart / clubs<small>${act.checkins.length} on the course now</small></div></button>
-   <button class="big alt" id="log"><i>📋</i><div>Today's check-ins</div></button>
-   ${isMgr() ? '<button class="big alt" id="dash"><i>📊</i><div>Dashboard &amp; history</div></button><button class="big alt" id="set"><i>⚙</i><div>Settings<small>fleet, terms, staff, export</small></div></button>' : ''}</div>`);
+  view(`<div class="welcome"><small>${new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}</small><h2>${greet()}, ${esc(String(ME.name).split(' ')[0])}</h2></div><div class="home">
+   <button class="big wide" id="new">${ico('plus')}<div>New check-in<small>${free} of ${carts.length} carts available</small></div></button>
+   <button class="big alt" id="ret">${ico('ret')}<div>Return cart / clubs<small>${act.checkins.length} on the course now</small></div></button>
+   <button class="big alt" id="log">${ico('list')}<div>Today's check-ins</div></button>
+   ${isMgr() ? `<button class="big alt" id="dash">${ico('chart')}<div>Dashboard &amp; history</div></button><button class="big alt" id="set">${ico('gear')}<div>Settings<small>fleet, terms, members, staff, export</small></div></button>` : ''}</div>`);
   $('#new').onclick = () => startCheckin(); $('#ret').onclick = returns; $('#log').onclick = () => history(new Date().toLocaleDateString('en-CA'));
   if (isMgr()) { $('#dash').onclick = () => dashboard(); $('#set').onclick = () => settings(); }
 }

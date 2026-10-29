@@ -42,13 +42,15 @@ One install serves both courses. Each course has its own carts, club sets, membe
 - The Expo app has no course switcher yet: a course-locked login works as is; a head-office login there always lands on the first course.
 
 ## Tablets
-- Browser: open the URL → "Add to Home screen".
-- APK: see below.
+- **Android tablet (simplest):** open the site in Chrome → menu → **Install app** / **Add to Home screen**. It opens full-screen like an app, with its own icon, and keeps the screen awake while someone is signed in. Works in portrait and landscape.
+- **Android APK:** see below.
 
 ## Android APK (two options)
-**Option A – Expo app (recommended):** see `expo-app/README.md` (`eas build -p android --profile apk`).
+**Option A – Capacitor wrapper of the web app (recommended).** It loads the live site, so every update to the site reaches the tablets with no new APK. Needs Node 18+ and Android Studio on any computer (`server.url` is already set to https://bulagolf.fijionline.nz/):
 
-**Option B – Capacitor wrapper of the web app.** Needs Node 18+ and Android Studio on any computer:
+**Option B – Expo app.** A separate native app (`expo-app/README.md`, `eas build -p android --profile apk`). It does **not** yet have the multi-course, members, hire-extras or new design: use Option A or the browser install for those.
+
+Option A steps:
 ```
 cd capacitor
 # edit capacitor.config.json: server.url = your https URL

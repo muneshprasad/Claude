@@ -45,7 +45,8 @@ try {
         $u = user();
         $c = cfg();
         out(['user' => $u ? $u + ['course_id' => user_course_id($u)] : null, 'currency' => $c['currency'], 'course' => $c['course_name'],
-              'courses' => $u ? q('SELECT id,name,full_name,tennis,shoes,room_charge,(logo IS NOT NULL) AS has_logo,UNIX_TIMESTAMP(logo_at) AS logo_v FROM courses WHERE active=1 ORDER BY id')->fetchAll() : []]);
+              // course names and logos are public (the sign-in screen shows them); the hire switches only go to signed-in users
+              'courses' => q('SELECT id,name,full_name,' . ($u ? 'tennis,shoes,room_charge,' : '') . '(logo IS NOT NULL) AS has_logo,UNIX_TIMESTAMP(logo_at) AS logo_v FROM courses WHERE active=1 ORDER BY id')->fetchAll()]);
     }
 
     // ---------- guests ----------
