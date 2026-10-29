@@ -60,7 +60,7 @@ async function home() {
    <button class="big alt" id="log">📋 Today's check-ins</button>
    ${isMgr() ? '<button class="big alt" id="dash">📊 Dashboard &amp; history</button><button class="big alt" id="set">⚙ Settings (fleet, terms, staff, export)</button>' : ''}`);
   $('#new').onclick = () => startCheckin(); $('#ret').onclick = returns; $('#log').onclick = () => history(new Date().toLocaleDateString('en-CA'));
-  if (isMgr()) { $('#dash').onclick = dashboard; $('#set').onclick = settings; }
+  if (isMgr()) { $('#dash').onclick = () => dashboard(); $('#set').onclick = () => settings(); }
 }
 
 /* ---------------- check-in wizard ---------------- */
