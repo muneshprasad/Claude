@@ -92,7 +92,7 @@ try {
         $b = body();
         $kind = in_array($b['kind'] ?? '', ['cart', 'clubs', 'shoes', 'racquet'], true) ? $b['kind'] : fail(422, 'Bad kind');
         $name = clean($b['name'] ?? null, 80) ?? fail(422, 'Name required');
-        $vals = [$kind, $name, clean($b['description'] ?? null), max(0, (float)($b['fee'] ?? 0)), (int)($b['sort_order'] ?? 0),
+        $vals = [$kind, $name, clean($b['description'] ?? null), $kind === 'cart' ? 0.0 : max(0, (float)($b['fee'] ?? 0)), (int)($b['sort_order'] ?? 0),
                  empty($b['maintenance']) ? 0 : 1, empty($b['active']) && isset($b['active']) ? 0 : 1, clean($b['gps_unit_id'] ?? null, 80)];
         $course = course_id($u);
         require_hire_kind($course, $kind);
@@ -112,7 +112,7 @@ try {
         $prefix = clean($b['prefix'] ?? null, 60) ?? fail(422, 'Name prefix required');
         $from = max(0, (int)($b['from'] ?? 1)); $count = (int)($b['count'] ?? 0);
         if ($count < 1 || $count > 200) fail(422, 'Count must be 1 to 200');
-        $fee = max(0, (float)($b['fee'] ?? 0)); $desc = clean($b['description'] ?? null);
+        $fee = $kind === 'cart' ? 0.0 : max(0, (float)($b['fee'] ?? 0)); $desc = clean($b['description'] ?? null);
         $course = course_id($u); $made = 0;
         require_hire_kind($course, $kind);
         for ($i = $from; $i < $from + $count; $i++) {
@@ -214,7 +214,7 @@ try {
                 $a = q('SELECT a.*, ' . STATUS_SQL . ' AS status FROM assets a WHERE a.id=? AND a.kind=? AND a.active=1 AND a.course_id=? FOR UPDATE', [$id, $kind, $course])->fetch();
                 if (!$a) fail(422, 'Unknown ' . $kind);
                 if ($a['status'] !== 'available') fail(409, "{$a['name']} is not available ({$a['status']})");
-                $hire += (float)$a['fee'];
+                if ($kind !== 'cart') $hire += (float)$a['fee']; // a cart comes with the round: never charged
             }
             $items = []; // rental shoes / tennis racquets
             foreach ($itemIds as $id) {
@@ -548,8 +548,8 @@ function report_run(string $type, int $cid, string $from, string $to, string $sc
         // one row per golfer (not per check-in): who they are, 9 or 18 holes, and how they are paying
         $rows = q("SELECT cat, holes, pay, COUNT(*) n FROM (
                      SELECT CASE WHEN cg.guest_type='member' THEN 'Members'
-                                 WHEN ccg.hotel IS NOT NULL AND ccg.hotel<>'' THEN 'Resort / hotel guests'
-                                 WHEN LOWER(COALESCE(ccg.country,'')) IN ('fiji','fijian','fiji islands') THEN 'Fiji residents (not members)'
+                                 WHEN cg.hotel IS NOT NULL AND cg.hotel<>'' THEN 'Resort / hotel guests'
+                                 WHEN LOWER(COALESCE(cg.country,'')) IN ('fiji','fijian','fiji islands') THEN 'Fiji residents (not members)'
                                  ELSE 'Other visitors' END AS cat,
                             c.holes AS holes,
                             CASE WHEN cg.guest_type='member' THEN 'member' ELSE c.fee_status END AS pay
@@ -627,7 +627,7 @@ function report_run(string $type, int $cid, string $from, string $to, string $sc
             $sec($label, [['Name', 'text'], ['Times hired', 'int'], ['Estimated hire income', 'money'], ['Damaged returns', 'int'], ['Last used', 'datetime'], ['Note', 'text']],
                  array_map(function ($r) {
                      $note = (int)$r['maintenance'] ? 'In maintenance' : ((int)$r['uses'] === 0 ? 'Not used this period' : ((int)$r['damaged'] > 0 ? 'Had damage' : ''));
-                     return [$r['name'], (int)$r['uses'], (int)$r['uses'] * (float)$r['fee'], (int)$r['damaged'], $r['last_used'], $note];
+                     return [$r['name'], (int)$r['uses'], $r['kind'] === 'cart' ? null : (int)$r['uses'] * (float)$r['fee'], (int)$r['damaged'], $r['last_used'], $note];
                  }, $by[$k]));
             foreach ($by[$k] as $r) {
                 $dmg += (int)$r['damaged']; if ((int)$r['uses'] === 0) $idle++;

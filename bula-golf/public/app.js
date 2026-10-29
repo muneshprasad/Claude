@@ -233,7 +233,7 @@ async function assetStep() {
   if (W.cart === null && sug) W.cart = null; // staff must choose; suggestion is highlighted
   const tiles = (list, sel, key) => list.map(a => {
     const off = a.status !== 'available';
-    return `<div class="tile ${off ? 'off' : ''} ${sel === a.id ? 'sel' : ''} ${key === 'cart' && sug?.id === a.id && sel !== a.id ? 'sug' : ''}" data-k="${key}" data-id="${a.id}" ${off ? 'data-off="1"' : ''}>${esc(a.name)}<small>${esc(a.description || '')} ${money(a.fee)}${off ? '<br>' + esc(a.status.replace('_', ' ')) : ''}${a.gps_battery != null && !off ? ' · 🔋' + a.gps_battery + '%' : ''}</small></div>`;
+    return `<div class="tile ${off ? 'off' : ''} ${sel === a.id ? 'sel' : ''} ${key === 'cart' && sug?.id === a.id && sel !== a.id ? 'sug' : ''}" data-k="${key}" data-id="${a.id}" ${off ? 'data-off="1"' : ''}>${esc(a.name)}<small>${esc(a.description || '')} ${key === 'cart' ? 'included' : money(a.fee)}${off ? '<br>' + esc(a.status.replace('_', ' ')) : ''}${a.gps_battery != null && !off ? ' · 🔋' + a.gps_battery + '%' : ''}</small></div>`;
   }).join('') || '<span class="mut">None set up</span>';
   const hasHotel = feat().room && W.golfers.some(g => g.hotel); // room charging: only where head office enabled it, and only with a hotel
   if (!hasHotel && W.fee === 'room') W.fee = 'unpaid';
@@ -258,7 +258,7 @@ async function assetStep() {
     <h3 id="tot"></h3>
     </div><div class="bar"><button class="p" id="done">✔ Complete check-in</button></div>`, 'Cart & clubs', () => signStep(W.golfers.length - 1));
   const fee = id => W.assets.find(a => a.id === id)?.fee || 0;
-  const total = () => { $('#tot').textContent = `Hire total: ${money(+fee(W.cart) + +fee(W.clubs) + W.items.reduce((s, id) => s + +fee(id), 0))}`; };
+  const total = () => { $('#tot').textContent = `Hire total: ${money(+fee(W.clubs) +W.items.reduce((s, id) => s + +fee(id), 0))}`; };
   total();
   document.querySelectorAll('.tile').forEach(t => t.onclick = () => {
     if (t.dataset.off) return toast('That one is not available', true);
@@ -438,17 +438,17 @@ function settings(tab) {
 }
 async function fleet() {
   const { assets } = await api('assets', { params: { all: 1 } });
-  const row = a => `<tr data-id="${a.id || ''}"><td><input class="n" value="${esc(a.name)}"></td><td><input class="ds" value="${esc(a.description || '')}" placeholder="e.g. Men's RH"></td><td><input class="f" type="number" step="0.5" value="${a.fee ?? 0}" style="width:80px"></td>
+  const row = a => `<tr data-id="${a.id || ''}"><td><input class="n" value="${esc(a.name)}"></td><td><input class="ds" value="${esc(a.description || '')}" placeholder="e.g. Men's RH"></td><td><input class="f" type="number" step="0.5" value="${a.kind === 'cart' ? 0 : a.fee ?? 0}" style="width:80px" ${a.kind === 'cart' ? 'disabled title="Carts come with the round: no hire fee"' : ''}></td>
     <td><input class="g" value="${esc(a.gps_unit_id || '')}" placeholder="GPS unit" style="width:110px"></td><td><label><input class="m" type="checkbox" ${+a.maintenance ? 'checked' : ''}> Maint.</label><label><input class="ac" type="checkbox" ${a.active === undefined || +a.active ? 'checked' : ''}> Active</label></td>
     <td><button class="sv p" data-k="${a.kind}">Save</button></td></tr>`;
-  const sect = (k, t) => `<div class="card"><h2>${t} · ${esc(courseName())}</h2><table><tr><th>Name</th><th>Description</th><th>Fee</th><th>GPS ID</th><th></th><th></th></tr>${assets.filter(a => a.kind === k).map(row).join('')}${row({ kind: k, name: '', fee: k === 'cart' ? 40 : 50 })}</table><p class="mut">Last row adds a new one.</p></div>`;
+  const sect = (k, t) => `<div class="card"><h2>${t} · ${esc(courseName())}</h2><table><tr><th>Name</th><th>Description</th><th>Fee</th><th>GPS ID</th><th></th><th></th></tr>${assets.filter(a => a.kind === k).map(row).join('')}${row({ kind: k, name: '', fee: k === 'cart' ? 0 : 50 })}</table><p class="mut">${k === 'cart' ? 'Carts come with the round of golf, so they have no hire fee. ' : ''}Last row adds a new one.</p></div>`;
   const bulk = `<div class="card"><h2>Add many at once · ${esc(courseName())}</h2><p class="mut">Creates a numbered run, e.g. Cart 1 to Cart 40. Names that already exist are skipped. Rename or re-price individual ones below.</p>
     <div class="row"><div><label>What</label><select id="bk"><option value="cart">Golf carts</option><option value="clubs">Club sets</option>${feat().shoes ? '<option value="shoes">Rental shoes</option>' : ''}${feat().tennis ? '<option value="racquet">Tennis hire</option>' : ''}</select></div><div><label>Name prefix</label><input id="bp" value="Cart"></div></div>
     <div class="row"><div><label>Start at number</label><input id="bf" type="number" min="0" value="1"></div><div><label>How many</label><input id="bn" type="number" min="1" max="200" value="${assets.some(a => a.kind === 'cart') ? 10 : 40}"></div></div>
-    <div class="row"><div><label>Hire fee (${CUR})</label><input id="bfee" type="number" step="0.5" min="0" value="40"></div><div><label>Description (optional)</label><input id="bd" placeholder="e.g. Men's, Ladies', Tennis"></div></div><p><button class="p" id="bgo">Create</button></p></div>`;
+    <div class="row"><div><label>Hire fee (${CUR})</label><input id="bfee" type="number" step="0.5" min="0" value="0" disabled title="Carts come with the round: no hire fee"></div><div><label>Description (optional)</label><input id="bd" placeholder="e.g. Men's, Ladies', Tennis"></div></div><p><button class="p" id="bgo">Create</button></p></div>`;
   $('#pane').innerHTML = bulk + sect('cart', 'Golf carts') + sect('clubs', 'Club sets') + (feat().shoes ? sect('shoes', 'Rental shoes') : '') + (feat().tennis ? sect('racquet', 'Tennis hire (racquets, tennis shoes)') : '');
-  const DEF = { cart: ['Cart', 40], clubs: ['Set', 50], shoes: ['Shoes', 10], racquet: ['Racquet', 15] };
-  $('#bk').onchange = () => { const [p, f] = DEF[$('#bk').value]; $('#bp').value = p; $('#bfee').value = f; };
+  const DEF = { cart: ['Cart', 0], clubs: ['Set', 50], shoes: ['Shoes', 10], racquet: ['Racquet', 15] };
+  $('#bk').onchange = () => { const [p, f] = DEF[$('#bk').value]; $('#bp').value = p; $('#bfee').value = f; $('#bfee').disabled = $('#bk').value === 'cart'; };
   $('#bgo').onclick = guard(async () => {
     const r = await api('assets/bulk', { method: 'POST', body: { kind: $('#bk').value, prefix: $('#bp').value, from: $('#bf').value, count: $('#bn').value, fee: $('#bfee').value, description: $('#bd').value } });
     toast(`${r.created} created${r.skipped ? `, ${r.skipped} already existed` : ''}`); fleet();

@@ -29,7 +29,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // starter fleet: 65 carts and 40 hire sets (rename, set fees and descriptions in Settings)
     // (starter sizes are a guess; set the real numbers in Settings)
     foreach ([[1, 65, 40], [2, 40, 30]] as [$course, $nCarts, $nClubs]) {
-        foreach (range(1, $nCarts) as $i) q("INSERT INTO assets (course_id,kind,name,fee,sort_order) VALUES (?,'cart',?,40,?)", [$course, "Cart $i", $i]);
+        foreach (range(1, $nCarts) as $i) q("INSERT INTO assets (course_id,kind,name,fee,sort_order) VALUES (?,'cart',?,0,?)", [$course, "Cart $i", $i]);
         foreach (range(1, $nClubs) as $i) q("INSERT INTO assets (course_id,kind,name,fee,sort_order) VALUES (?,'clubs',?,50,?)", [$course, "Set $i", $i]);
     }
     exit('<p>Manager created (head office: sees both courses). Natadola has 65 carts / 40 hire sets and Denarau 40 / 30 as a starting point; change them in Settings. <b>Delete api/setup.php from the server now</b>, then <a href="../">open the app</a>.</p>');
