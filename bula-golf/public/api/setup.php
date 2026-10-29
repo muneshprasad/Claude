@@ -27,9 +27,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!preg_match('/^[a-z0-9._-]{3,50}$/', $un) || strlen($pw) < 8 || $name === '') exit('<p>Username 3+ chars, name required, password 8+ chars. Go back and try again.</p>');
     q('INSERT INTO users (username,name,role,pass_hash) VALUES (?,?,?,?)', [$un, $name, 'manager', password_hash($pw, PASSWORD_DEFAULT)]);
     // starter fleet: 65 carts and 40 hire sets (rename, set fees and descriptions in Settings)
-    foreach (range(1, 65) as $i) q("INSERT INTO assets (kind,name,fee,sort_order) VALUES ('cart',?,40,?)", ["Cart $i", $i]);
-    foreach (range(1, 40) as $i) q("INSERT INTO assets (kind,name,fee,sort_order) VALUES ('clubs',?,50,?)", ["Set $i", $i]);
-    exit('<p>Manager created with 65 carts and 40 hire sets. <b>Delete api/setup.php from the server now</b>, then <a href="../">open the app</a>.</p>');
+    // (starter sizes are a guess; set the real numbers in Settings)
+    foreach ([[1, 65, 40], [2, 40, 30]] as [$course, $nCarts, $nClubs]) {
+        foreach (range(1, $nCarts) as $i) q("INSERT INTO assets (course_id,kind,name,fee,sort_order) VALUES (?,'cart',?,40,?)", [$course, "Cart $i", $i]);
+        foreach (range(1, $nClubs) as $i) q("INSERT INTO assets (course_id,kind,name,fee,sort_order) VALUES (?,'clubs',?,50,?)", [$course, "Set $i", $i]);
+    }
+    exit('<p>Manager created (head office: sees both courses). Natadola has 65 carts / 40 hire sets and Denarau 40 / 30 as a starting point; change them in Settings. <b>Delete api/setup.php from the server now</b>, then <a href="../">open the app</a>.</p>');
 }
 ?>
 <!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

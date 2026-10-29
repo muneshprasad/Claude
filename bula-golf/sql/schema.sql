@@ -1,12 +1,20 @@
 -- Bula Golf check-in schema (MySQL 5.7+ / MariaDB 10.3+)
 SET NAMES utf8mb4;
 
+CREATE TABLE IF NOT EXISTS courses (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(80) NOT NULL UNIQUE,
+  active TINYINT(1) NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS users (
   id INT AUTO_INCREMENT PRIMARY KEY,
   username VARCHAR(50) NOT NULL UNIQUE,
   name VARCHAR(100) NOT NULL,
   pass_hash VARCHAR(255) NOT NULL,
   role ENUM('staff','manager') NOT NULL DEFAULT 'staff',
+  course_id INT NULL,                     -- NULL = head office: can switch between all courses
   active TINYINT(1) NOT NULL DEFAULT 1,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -33,6 +41,7 @@ CREATE TABLE IF NOT EXISTS guests (
 
 CREATE TABLE IF NOT EXISTS assets (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  course_id INT NOT NULL DEFAULT 1,
   kind ENUM('cart','clubs') NOT NULL,
   name VARCHAR(80) NOT NULL,
   description VARCHAR(150) NULL,          -- e.g. "Men's RH"
@@ -46,11 +55,12 @@ CREATE TABLE IF NOT EXISTS assets (
   gps_lat DECIMAL(9,6) NULL,
   gps_lng DECIMAL(9,6) NULL,
   gps_seen DATETIME NULL,
-  UNIQUE KEY uq_kind_name (kind, name)
+  UNIQUE KEY uq_course_kind_name (course_id, kind, name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS checkins (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  course_id INT NOT NULL DEFAULT 1,
   main_guest_id INT NULL,
   holes TINYINT NOT NULL DEFAULT 18,
   fee_status ENUM('paid','room','unpaid') NOT NULL DEFAULT 'unpaid',
@@ -69,6 +79,7 @@ CREATE TABLE IF NOT EXISTS checkins (
   return_photo MEDIUMTEXT NULL,           -- data URL (jpeg, resized in browser)
   KEY idx_open (returned_at),
   KEY idx_date (checked_in_at),
+  KEY idx_course_date (course_id, checked_in_at),
   FOREIGN KEY (main_guest_id) REFERENCES guests(id),
   FOREIGN KEY (cart_id) REFERENCES assets(id),
   FOREIGN KEY (clubs_id) REFERENCES assets(id),
@@ -120,6 +131,8 @@ CREATE TABLE IF NOT EXISTS login_attempts (
   at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_u (username, at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT IGNORE INTO courses (id, name) VALUES (1, 'Natadola'), (2, 'Denarau');
 
 -- Placeholder terms: REPLACE with wording approved by your lawyer before going live.
 INSERT INTO terms (body) VALUES (

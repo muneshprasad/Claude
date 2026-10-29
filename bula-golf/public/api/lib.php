@@ -81,6 +81,32 @@ function require_login(): array {
     return $u;
 }
 
+/** users.course_id: the one course a login is locked to, or null for head office (all courses). Read fresh so edits apply at once. */
+function user_course_id(array $u): ?int {
+    $v = q('SELECT course_id FROM users WHERE id=?', [$u['id']])->fetchColumn();
+    return $v === false || $v === null ? null : (int)$v;
+}
+
+/** The course this request is about: a locked login always gets its own; head office picks via X-Bula-Course header or ?course=. */
+function course_id(array $u): int {
+    static $c = null;
+    if ($c !== null) return $c;
+    $bound = user_course_id($u);
+    if ($bound) return $c = $bound;
+    $ids = array_map('intval', q('SELECT id FROM courses WHERE active=1 ORDER BY id')->fetchAll(PDO::FETCH_COLUMN));
+    if (!$ids) fail(500, 'No courses set up');
+    $want = (int)($_SERVER['HTTP_X_BULA_COURSE'] ?? $_GET['course'] ?? 0);
+    return $c = in_array($want, $ids, true) ? $want : $ids[0];
+}
+
+function is_admin(array $u): bool { return $u['role'] === 'manager' && user_course_id($u) === null; }
+
+function require_admin(): array {
+    $u = require_manager();
+    if (!is_admin($u)) fail(403, 'Head-office admin only');
+    return $u;
+}
+
 function require_manager(): array {
     $u = require_login();
     if ($u['role'] !== 'manager') fail(403, 'Manager access only');

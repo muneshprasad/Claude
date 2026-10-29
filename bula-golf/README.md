@@ -32,6 +32,13 @@ prototype.html the original single-file offline prototype
 6. **Delete `api/setup.php`** from the server.
 7. Log in at `https://yourdomain/golf/`, then Settings → Terms: replace the placeholder wording with your lawyer's text.
 
+## Courses (Natadola and Denarau)
+One install serves both courses. Each course has its own carts, club sets, check-ins and dashboard; guests and terms are shared.
+- **Head office** logins (Settings > Staff > Course = "All courses") run everything from the console: Settings > Courses (add/rename, "Set up" jumps to that course's fleet), Carts & clubs (single edits or **Add many at once**), Staff (create logins locked to Natadola or Denarau), Terms, and an **All courses** dashboard plus a course switcher in the header.
+- **Per course: 1 admin + 2 check-in staff, each with their own login.** Create them as a *manager* and two *staff*, all set to that one course. A course-locked manager sees only their course (dashboard, fleet, history, export) and can add or disable their own course's check-in staff, but cannot touch Terms, Courses, or the other course.
+- **Existing install?** Run `sql/migrate_courses.sql` once (phpMyAdmin > SQL). Everything already there is assigned to Natadola; Denarau starts empty, so use Settings > Courses > Set up > Add many at once to create its fleet.
+- The Expo app has no course switcher yet: a course-locked login works as is; a head-office login there always lands on the first course.
+
 ## Tablets
 - Browser: open the URL → "Add to Home screen".
 - APK: see below.
