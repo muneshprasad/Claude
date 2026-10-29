@@ -99,6 +99,32 @@ function course_id(array $u): int {
     return $c = in_array($want, $ids, true) ? $want : $ids[0];
 }
 
+/** Fail unless this course offers the hire type (shoes / racquet are per-course features; Natadola has no tennis). */
+function require_hire_kind(int $course, string $kind): void {
+    if ($kind !== 'shoes' && $kind !== 'racquet') return;
+    $col = $kind === 'racquet' ? 'tennis' : 'shoes';
+    if (!(int)q("SELECT $col FROM courses WHERE id=?", [$course])->fetchColumn()) fail(422, ($kind === 'racquet' ? 'Tennis hire' : 'Shoe hire') . ' is not set up for this course');
+}
+
+/** A real calendar date as Y-m-d, or null. */
+function valid_date($d): ?string {
+    if (!is_string($d) || !preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $d, $m) || !checkdate((int)$m[2], (int)$m[3], (int)$m[1])) return null;
+    return $d;
+}
+
+/** The member row for this course matching a member number and/or mobile (newest expiry first), or null. */
+function find_member(int $course, ?string $no, string $mobile, ?string $first = null, ?string $last = null): ?array {
+    $conds = []; $p = [$course];
+    if ($no) { $conds[] = 'member_no=?'; $p[] = $no; }
+    if (strlen($mobile) >= 5) { $conds[] = 'mobile=?'; $p[] = $mobile; }
+    if (!$conds) return null;
+    $sql = 'SELECT id,member_no,first_name,last_name,mobile,email,expires_on,(expires_on IS NOT NULL AND expires_on < CURDATE()) AS expired,
+              DATEDIFF(expires_on, CURDATE()) AS days_left
+              FROM members WHERE course_id=? AND (' . implode(' OR ', $conds) . ')';
+    if ($first !== null && $last !== null) { $sql .= ' AND LOWER(first_name)=LOWER(?) AND LOWER(last_name)=LOWER(?)'; array_push($p, $first, $last); } // the golfer must BE the member
+    return q($sql . ' ORDER BY (expires_on IS NULL), expires_on DESC LIMIT 1', $p)->fetch() ?: null;
+}
+
 function is_admin(array $u): bool { return $u['role'] === 'manager' && user_course_id($u) === null; }
 
 function require_admin(): array {
@@ -133,9 +159,17 @@ function valid_png(string $d, int $maxBytes = 600000): bool {
     return $bin !== false && strlen($bin) > 400 && strlen($bin) <= $maxBytes;
 }
 
+/** Terms wording for a course: its own newest version, else the newest shared (course_id NULL), else the newest of any. */
+function terms_for(int $course): array {
+    return q('SELECT version, body FROM terms ORDER BY (course_id = ?) DESC, (course_id IS NULL) DESC, version DESC LIMIT 1', [$course])->fetch() ?: ['version' => 0, 'body' => ''];
+}
+
+/** SQL fragment: check-in "c" currently holds asset "a" (cart, clubs, or an extra hire item such as shoes/racquet). */
+const HOLDS_SQL = "(c.cart_id = a.id OR c.clubs_id = a.id OR c.id IN (SELECT i.checkin_id FROM checkin_items i WHERE i.asset_id = a.id))";
+
 /** SQL fragment: effective status for an asset row aliased "a". */
 const STATUS_SQL = "CASE
-    WHEN EXISTS (SELECT 1 FROM checkins c WHERE c.returned_at IS NULL AND (c.cart_id = a.id OR c.clubs_id = a.id)) THEN 'out'
+    WHEN EXISTS (SELECT 1 FROM checkins c WHERE c.returned_at IS NULL AND (c.cart_id = a.id OR c.clubs_id = a.id OR c.id IN (SELECT i.checkin_id FROM checkin_items i WHERE i.asset_id = a.id))) THEN 'out'
     WHEN a.maintenance = 1 THEN 'maintenance'
     WHEN a.gps_status IS NOT NULL AND a.gps_status <> 'ready' THEN a.gps_status
     ELSE 'available' END";
