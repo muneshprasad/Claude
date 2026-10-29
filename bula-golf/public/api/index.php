@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 require __DIR__ . '/lib.php';
+require __DIR__ . '/pdf.php';
 
 $route = $_GET['r'] ?? '';
 $method = $_SERVER['REQUEST_METHOD'];
@@ -41,6 +42,11 @@ try {
         if (!empty($_SERVER['HTTP_X_BULA_TOKEN'])) q('DELETE FROM api_tokens WHERE token_hash=?', [hash('sha256', $_SERVER['HTTP_X_BULA_TOKEN'])]);
         else { start_session(); $_SESSION = []; session_destroy(); }
         out(['ok' => true]);
+    case 'version': { // a fingerprint of the app files, so a tablet running an old copy (an iPad home-screen app, say) knows to update
+        $dir = dirname(__DIR__); $v = '';
+        foreach (['index.html', 'app.js', 'style.css'] as $f) $v .= (string)@filemtime($dir . '/' . $f) . ':' . (string)@filesize($dir . '/' . $f) . ';';
+        out(['v' => substr(md5($v), 0, 12)]);
+    }
     case 'auth/me': {
         $u = user();
         $c = cfg();
@@ -67,9 +73,15 @@ try {
     }
     case 'guests/search': {
         require_login();
-        $s = '%' . str_replace(['%', '_'], ['\%', '\_'], trim((string)($_GET['q'] ?? ''))) . '%';
-        if (strlen($s) < 4) out(['guests' => []]);
-        out(['guests' => q('SELECT * FROM guests WHERE CONCAT(first_name," ",last_name) LIKE ? OR mobile LIKE ? ORDER BY last_visit DESC LIMIT 15', [$s, $s])->fetchAll()]);
+        // a returning guest by name (either order, part of a name is enough) or by mobile number (spaces and dashes ignored)
+        $raw = trim((string)($_GET['q'] ?? ''));
+        if (mb_strlen($raw) < 2) out(['guests' => []]);
+        $s = '%' . str_replace(['%', '_'], ['\%', '\_'], $raw) . '%';
+        $digits = preg_replace('/[^0-9+]/', '', $raw);
+        $d = strlen($digits) >= 3 ? '%' . $digits . '%' : '';
+        out(['guests' => q("SELECT id, mobile, first_name, last_name, email, country, hotel, room, dob, marketing_optin, alert_note, visits, last_visit FROM guests
+                            WHERE CONCAT(first_name,' ',last_name) LIKE ? OR CONCAT(last_name,' ',first_name) LIKE ? OR (? <> '' AND mobile LIKE ?)
+                            ORDER BY last_visit DESC LIMIT 12", [$s, $s, $d, $d])->fetchAll()]);
     }
     case 'guests/alert': { // manager sets or clears a patron warning note
         $u = require_perm('history');
@@ -245,7 +257,7 @@ try {
                 [$course, $holes, $fee, clean($b['tee_time'] ?? null, 5), $cartId, $clubsId, $hire, clean($b['notes'] ?? null, 500), clean($b['bags'] ?? null, 40), $terms, $u['id']]);
             $ciId = (int)$pdo->lastInsertId();
             foreach ($items as [$aid, $afee]) q('INSERT INTO checkin_items (checkin_id,asset_id,hire_fee) VALUES (?,?,?)', [$ciId, $aid, $afee]);
-            $mainId = 0; $allMembers = true;
+            $mainId = 0; $allMembers = true; $mailJobs = []; // golfers who gave an email get a PDF copy of what they signed
             foreach ($golfers as $i => $g) {
                 $first = clean($g['first_name'] ?? null, 80); $last = clean($g['last_name'] ?? null, 80);
                 $mobile = norm_mobile((string)($g['mobile'] ?? ''));
@@ -275,13 +287,22 @@ try {
                 // hotel and country are kept per check-in (the guest record only holds the latest), so reports stay true for past dates
                 q('INSERT INTO checkin_golfers (checkin_id,guest_id,is_main,signature,signed_ip,guardian_name,guest_type,member_id,hotel,country) VALUES (?,?,?,?,?,?,?,?,?,?)',
                     [$ciId, $gid, $i === 0 ? 1 : 0, $g['signature'], ip(), $guardian, $f[5], $memberId, $f[2], $f[1]]);
+                if ($f[0] && filter_var($f[0], FILTER_VALIDATE_EMAIL)) $mailJobs[(int)$pdo->lastInsertId()] = $f[0];
             }
             if ($fee === 'member' && !$allMembers) fail(422, 'No green fee needs every golfer to be a verified, current member with their card or ID seen');
             q('UPDATE checkins SET main_guest_id=? WHERE id=?', [$mainId, $ciId]);
             $pdo->commit();
         } catch (Throwable $e) { if ($pdo->inTransaction()) $pdo->rollBack(); throw $e; }
         audit($u['id'], 'checkin', "id $ciId");
-        out(['id' => $ciId, 'hire_fee' => $hire]);
+        $queued = $mailJobs && (cfg()['email_signed_copy'] ?? true) && mail_settings_for($course)['enabled'] ? count($mailJobs) : 0;
+        if ($queued) { // send after the tablet has its answer, so check-in is never held up by email
+            register_shutdown_function(function () use ($mailJobs) {
+                if (function_exists('fastcgi_finish_request')) fastcgi_finish_request(); elseif (function_exists('litespeed_finish_request')) litespeed_finish_request();
+                ignore_user_abort(true); @set_time_limit(90);
+                foreach ($mailJobs as $cgId => $to) { try { send_signed_copy((int)$cgId, (string)$to); } catch (Throwable $e) { error_log('bulagolf mail: ' . $e->getMessage()); } }
+            });
+        }
+        out(['id' => $ciId, 'hire_fee' => $hire, 'emailing' => $queued]);
     }
 
     case 'checkins/active': {
@@ -298,10 +319,31 @@ try {
         $u = require_perm('history');
         $id = (int)($_GET['id'] ?? 0);
         $c = q('SELECT c.*, ca.name cart_name, cl.name clubs_name, u.name staff_name FROM checkins c LEFT JOIN assets ca ON ca.id=c.cart_id LEFT JOIN assets cl ON cl.id=c.clubs_id JOIN users u ON u.id=c.staff_id WHERE c.id=? AND c.course_id=?', [$id, course_id($u)])->fetch() ?: fail(404, 'Not found');
-        $c['golfers'] = q('SELECT g.first_name,g.last_name,g.mobile,g.email,g.hotel,g.room,cg.signature,cg.signed_at,cg.guardian_name,cg.is_main,cg.guest_type,(SELECT mm.member_no FROM members mm WHERE mm.id=cg.member_id) AS member_no FROM checkin_golfers cg JOIN guests g ON g.id=cg.guest_id WHERE cg.checkin_id=? ORDER BY cg.id', [$id])->fetchAll();
+        $c['golfers'] = q('SELECT cg.id AS golfer_id,g.first_name,g.last_name,g.mobile,g.email,g.hotel,g.room,cg.signature,cg.signed_at,cg.guardian_name,cg.is_main,cg.guest_type,(SELECT mm.member_no FROM members mm WHERE mm.id=cg.member_id) AS member_no FROM checkin_golfers cg JOIN guests g ON g.id=cg.guest_id WHERE cg.checkin_id=? ORDER BY cg.id', [$id])->fetchAll();
         $c['terms'] = q('SELECT body FROM terms WHERE version=?', [$c['terms_version']])->fetchColumn();
+        try { $c['emails'] = q('SELECT golfer_id, to_email, status, sent_at FROM email_log WHERE checkin_id=? ORDER BY id DESC', [$id])->fetchAll(); } catch (Throwable $e) { $c['emails'] = []; } // before migrate_email.sql has run
         $c['items'] = q('SELECT a.name, a.kind, a.description FROM checkin_items i JOIN assets a ON a.id=i.asset_id WHERE i.checkin_id=? ORDER BY a.kind, a.name', [$id])->fetchAll();
         out($c);
+    }
+    case 'checkins/pdf': { // a golfer's signed copy as a PDF (History access)
+        $u = require_perm('history');
+        $d = signed_pdf_for((int)($_GET['id'] ?? 0), course_id($u)) ?: fail(404, 'Not found');
+        audit($u['id'], 'pdf_view', 'check-in ' . $d['ci']['id']);
+        header('Content-Type: application/pdf');
+        header('Content-Disposition: inline; filename="signed-agreement-' . (int)$d['ci']['id'] . '.pdf"');
+        header('Cache-Control: private, no-store');
+        echo $d['pdf'];
+        exit;
+    }
+    case 'checkins/email': { // email (or re-email) a signed copy, to the guest's address or one typed in
+        $u = require_perm('history');
+        $b = body();
+        $id = (int)($b['id'] ?? 0);
+        if (!signed_pdf_for($id, course_id($u))) fail(404, 'Not found');
+        [$ok, $msg] = send_signed_copy($id, (string)($b['to'] ?? ''));
+        audit($u['id'], 'pdf_email', "record $id " . ($ok ? 'sent' : 'failed'));
+        if (!$ok) fail(502, $msg);
+        out(['ok' => true]);
     }
     case 'checkins/return': {
         $u = require_login();
@@ -390,6 +432,73 @@ try {
         }
         out(['courses' => $rows]);
     }
+    // ---------- email: system default (head office) and each course's own choice ----------
+    case 'email/get': {
+        $u = require_course_admin();
+        $cid = course_id($u);
+        $pub = static function (array $r): ?array {
+            if (!$r) return null;
+            unset($r['updated_at']);
+            $r['has_pass'] = !empty($r['smtp_pass']); unset($r['smtp_pass']); // the password never leaves the server
+            return $r;
+        };
+        $eff = mail_settings_for($cid);
+        $promo = '';
+        try { $promo = (string)q('SELECT promo FROM courses WHERE id=?', [$cid])->fetchColumn(); } catch (Throwable $e) { }
+        out(['course' => $pub(email_row($cid)), 'system' => is_admin($u) ? $pub(email_row(0)) : null, 'is_head_office' => is_admin($u),
+             'sending_as' => ['from' => $eff['from'], 'name' => $eff['from_name'], 'source' => $eff['source'], 'method' => $eff['method'], 'enabled' => $eff['enabled']],
+             'promo' => $promo]);
+    }
+    case 'email/save': {
+        $u = require_course_admin();
+        $b = body();
+        $scope = ($b['scope'] ?? '') === 'system' ? 'system' : 'course';
+        if ($scope === 'system') require_admin(); // only head office sets the system sender
+        $cid = $scope === 'system' ? 0 : course_id($u);
+        $mail = static function ($v, string $what): ?string { $v = clean($v, 150); if ($v === null) return null; if (!filter_var($v, FILTER_VALIDATE_EMAIL)) fail(422, "$what is not a valid email address"); return $v; };
+        $method = ($b['method'] ?? '') === 'smtp' ? 'smtp' : 'mail';
+        $secure = in_array($b['smtp_secure'] ?? '', ['none', 'ssl', 'tls'], true) ? $b['smtp_secure'] : 'tls';
+        $host = clean($b['smtp_host'] ?? null, 150);
+        if ($host !== null && !preg_match('/^[A-Za-z0-9.-]+$/', $host)) fail(422, 'The SMTP server name should look like mail.example.com');
+        $port = (int)($b['smtp_port'] ?? 0); if ($port && ($port < 1 || $port > 65535)) fail(422, 'The SMTP port should be a number such as 587 or 465');
+        $own = $scope === 'course' && empty($b['use_system']);
+        $from = $mail($b['from_email'] ?? null, 'The sending address');
+        if (($scope === 'system' || $own) && $method === 'smtp' && !$host) fail(422, 'Enter the SMTP server (for example mail.example.com)');
+        if ($own && !$from) fail(422, 'Enter the address this course should send from, or choose the system email');
+        q('INSERT INTO email_settings (course_id, enabled, use_system, method, from_name, from_email, reply_to, smtp_host, smtp_port, smtp_secure, smtp_user)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)
+           ON DUPLICATE KEY UPDATE enabled=VALUES(enabled), use_system=VALUES(use_system), method=VALUES(method), from_name=VALUES(from_name), from_email=VALUES(from_email),
+             reply_to=VALUES(reply_to), smtp_host=VALUES(smtp_host), smtp_port=VALUES(smtp_port), smtp_secure=VALUES(smtp_secure), smtp_user=VALUES(smtp_user)',
+          [$cid, $scope === 'system' || !empty($b['enabled']) ? 1 : 0, $scope === 'system' || !$own ? 1 : 0, $method, clean($b['from_name'] ?? null, 100), $from,
+           $mail($b['reply_to'] ?? null, 'The reply-to address'), $host, $port ?: null, $secure, clean($b['smtp_user'] ?? null, 150)]);
+        $pw = (string)($b['smtp_pass'] ?? '');
+        if ($pw !== '') q('UPDATE email_settings SET smtp_pass=? WHERE course_id=?', [secret_enc($pw), $cid]);
+        elseif (!empty($b['clear_pass'])) q('UPDATE email_settings SET smtp_pass=NULL WHERE course_id=?', [$cid]);
+        audit($u['id'], 'email_settings', $scope === 'system' ? 'system' : "course $cid");
+        out(['ok' => true]);
+    }
+    case 'email/test': { // sends a short message using the saved settings, so a bad password or server shows up now, not at check-in
+        $u = require_course_admin();
+        $b = body();
+        $system = ($b['scope'] ?? '') === 'system';
+        if ($system) require_admin();
+        [$ok, $msg] = send_test_email($system ? 0 : course_id($u), (string)($b['to'] ?? ''));
+        audit($u['id'], 'email_test', ($system ? 'system ' : 'course ') . ($ok ? 'ok' : 'failed'));
+        if (!$ok) fail(502, $msg);
+        out(['ok' => true]);
+    }
+    case 'course/promo': { // the banner at the foot of each emailed PDF; a course admin sets their own course's
+        $u = require_course_admin();
+        $p = (string)(body()['promo'] ?? '');
+        $cid = course_id($u);
+        if ($p === '') { q('UPDATE courses SET promo=NULL, promo_at=NULL WHERE id=?', [$cid]); out(['ok' => true]); }
+        if (!preg_match('#^data:image/(jpeg|png);base64,[A-Za-z0-9+/=]+$#', $p) || strlen($p) > 1100000) fail(422, 'Use a JPEG or PNG under about 800 KB');
+        if (!pdf_image_from_dataurl($p)) fail(422, 'That image format can\'t go in the PDF. Save it as a standard JPEG or PNG and try again');
+        q('UPDATE courses SET promo=?, promo_at=NOW() WHERE id=?', [$p, $cid]);
+        audit($u['id'], 'promo_set', "course $cid");
+        out(['ok' => true]);
+    }
+
     case 'course/timing': { // a course admin sets their own course's round times (minutes); head office edits whichever course is selected
         $u = require_course_admin();
         $b = body();

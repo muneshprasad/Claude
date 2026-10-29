@@ -2,6 +2,10 @@ Options -Indexes
 <IfModule mod_headers.c>
   Header set X-Content-Type-Options "nosniff"
   Header set Referrer-Policy "same-origin"
+  # Always check for a newer copy of the app files (an iPad home-screen app otherwise keeps an old one for ages)
+  <FilesMatch "\.(html|js|css|json|svg)$">
+    Header set Cache-Control "no-cache, must-revalidate"
+  </FilesMatch>
 </IfModule>
 # Force HTTPS (signatures and phone numbers must not travel unencrypted)
 RewriteEngine On

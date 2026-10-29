@@ -43,8 +43,9 @@ const setTimer = (fn, ms = 10000) => { clearInterval(timer); timer = fn ? setInt
 const view = (html, title = '', back = null) => {
   setTimer(null);
   const switcher = ME && !ME.course_id && COURSES.length > 1 ? `<select id="cs" aria-label="Course">${COURSES.map(c => `<option value="${c.id}" ${c.id == CID ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : '';
-  $('#app').innerHTML = `<header><h1>${ME && +COURSES.find(c => c.id == CID)?.has_logo ? `<img class="hlogo" src="${courseLogoUrl(COURSES.find(c => c.id == CID))}" alt="">` : '<svg class="hflag" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 21V3l11 5-11 5"/><path d="M4 21h9"/></svg>'} ${esc(ME ? courseFull() : COURSE)}${title ? ' <em>· ' + esc(title) + '</em>' : ''}</h1><div>${switcher}${back ? '<button id="back">← Back</button> ' : ''}${ME ? `<button id="out">${esc(ME.name)} · Sign out</button>` : ''}</div></header><main>${html}</main>`;
+  $('#app').innerHTML = `<header><h1>${ME && +COURSES.find(c => c.id == CID)?.has_logo ? `<img class="hlogo" src="${courseLogoUrl(COURSES.find(c => c.id == CID))}" alt="">` : '<svg class="hflag" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 21V3l11 5-11 5"/><path d="M4 21h9"/></svg>'} ${esc(ME ? courseFull() : COURSE)}${title ? ' <em>· ' + esc(title) + '</em>' : ''}</h1><div>${switcher}${back ? '<button id="back">← Back</button> ' : ''}<button id="rfh" type="button" class="rfh" title="Refresh the app" aria-label="Refresh the app">⟳</button>${ME ? `<button id="out">${esc(ME.name)} · Sign out</button>` : ''}</div></header><main>${html}</main>`;
   if (back) $('#back').onclick = back;
+  $('#rfh').onclick = () => location.reload(); // a home-screen app has no reload button of its own
   if (switcher) $('#cs').onchange = e => { CID = +e.target.value; store.set('bula_course', CID); home(); };
   if (ME) $('#out').onclick = guard(async () => { await api('auth/logout', { method: 'POST' }); ME = null; login(); });
   window.scrollTo(0, 0);
@@ -55,6 +56,29 @@ let wake = null;
 const keepAwake = async () => { try { if ('wakeLock' in navigator && !wake && !document.hidden && ME) { wake = await navigator.wakeLock.request('screen'); wake.addEventListener('release', () => { wake = null; }); } } catch { /* denied or unsupported: fine */ } };
 document.addEventListener('visibilitychange', () => { if (!document.hidden) keepAwake(); });
 /** Roles: admin (head office, or one course's admin), supervisor, staff. What a supervisor or staff member may open is set per course by that course's admin (Settings > Access). */
+/** Keeps a long-running tablet current. iPad home-screen apps in particular hold an old copy for ages: ask the server if the app changed, every minute and whenever the app comes back to the front. */
+let APP_VER = null;
+const updateReady = () => {
+  const idle = !!document.querySelector('.home') || !!document.querySelector('#lf'); // home or sign-in: nobody is mid check-in, so just update
+  if (idle) { toast('Updating to the latest version…'); setTimeout(() => location.reload(), 900); return; }
+  if (document.getElementById('upd')) return;
+  const b = document.createElement('div'); b.id = 'upd'; b.setAttribute('role', 'status');
+  b.innerHTML = '<span>A new version is ready.</span><button type="button" id="updgo">Update now</button><button type="button" id="updlater" class="ghost">Later</button>';
+  document.body.append(b);
+  $('#updgo').onclick = () => location.reload(); $('#updlater').onclick = () => b.remove();
+};
+const checkVersion = async () => {
+  try {
+    const r = await (await fetch(`${API}?r=version`, { cache: 'no-store' })).json();
+    if (!r.v) return;
+    if (APP_VER === null) APP_VER = r.v; else if (r.v !== APP_VER) updateReady();
+  } catch { /* offline: try again later */ }
+};
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkVersion(); });
+window.addEventListener('online', checkVersion);
+setInterval(() => { if (!document.hidden) checkVersion(); }, 60000);
+checkVersion();
+
 const can = p => ME?.role === 'admin' || (ME?.perms || []).includes(p);
 const isCourseAdmin = () => ME?.role === 'admin';
 const isAdmin = () => ME?.role === 'admin' && !ME.course_id; // head office: all courses, terms, courses
@@ -129,15 +153,18 @@ function golferForm(g = {}) {
   const n = W.golfers.length + 1, main = W.golfers[0];
   view(`${stepBar(1)}<div class="card"><h2>${n === 1 ? 'Guest details' : 'Golfer ' + n}</h2>
    ${W.golfers.length ? `<div class="mut">Already added: ${W.golfers.map(x => esc(x.first_name)).join(', ')}</div>` : ''}
+   <label for="gs">Returning guest? <span style="text-transform:none;letter-spacing:0;font-weight:400">type a name or mobile number</span></label><input id="gs" type="search" placeholder="e.g. Sarah, Mitchell or 700 1234" autocomplete="off"><div id="gres"></div>
+   <label class="chk" style="margin-top:14px"><input id="ismem" type="checkbox"> I'm a member of ${esc(courseName())}</label>
+   <div id="mfind" style="display:none"><label for="mfq">Find me in the member list <span style="text-transform:none;letter-spacing:0;font-weight:400">type your name or member number</span></label><input id="mfq" type="search" placeholder="e.g. Smith or M014" autocomplete="off"><div id="mfres"></div></div>
    <div class="row"><div><label>Mobile number *</label><input id="mobile" type="tel" inputmode="tel" value="${esc(g.mobile ?? main?.mobile ?? '')}"></div>
    <div><label>Member number <span class="mut">(members only)</span></label><input id="mno" value="${esc(g.member_no)}" autocapitalize="characters"></div></div>
    <div id="found"></div><div id="mstat"></div>
    <div class="row"><div><label>First name *</label><input id="fn" value="${esc(g.first_name)}"></div><div><label>Last name *</label><input id="ln" value="${esc(g.last_name)}"></div></div>
-   <div class="row"><div><label>Email</label><input id="em" type="email" value="${esc(g.email)}"></div>
-   <div><label>Where are they from?</label><select id="orig"><option value="overseas">Overseas visitor</option><option value="local">Fiji resident</option></select></div></div>
+   <div class="row"><div><label>Email <span style="text-transform:none;letter-spacing:0;font-weight:400">(optional: we'll email you a copy of what you sign)</span></label><input id="em" type="email" inputmode="email" autocapitalize="none" value="${esc(g.email)}"></div>
+   <div id="origwrap"><label>Where are they from?</label><select id="orig"><option value="overseas">Overseas visitor</option><option value="local">Fiji resident</option></select></div></div>
    <div id="ovr"><div class="row"><div><label>Country</label><input id="co" value="${esc(g.country ?? main?.country)}"></div><div><label>Hotel / where staying</label><input id="ho" value="${esc(g.hotel ?? main?.hotel ?? '')}"></div></div>
    <label>Room number</label><input id="ro" value="${esc(g.room ?? main?.room ?? '')}" style="max-width:320px"></div>
-   <label>Date of birth (needed for under-18s)</label><input id="dob" type="date" value="${esc(g.dob)}" style="max-width:320px">
+   <div id="dobwrap"><label>Date of birth (needed for under-18s)</label><input id="dob" type="date" value="${esc(g.dob)}" style="max-width:320px"></div>
    <div id="guard" class="hide"></div>
    <label class="chk"><input id="mk" type="checkbox" ${g.marketing_optin ? 'checked' : ''}> Happy to receive offers and news from ${esc(courseFull())}</label>
    <p class="mut">Your details are kept to make future check-ins faster.</p>
@@ -155,7 +182,14 @@ function golferForm(g = {}) {
     const nameOk = $('#fn').value.trim() && $('#ln').value.trim() && same($('#fn').value, MEM.first_name) && same($('#ln').value, MEM.last_name);
     return { found: true, nameOk, expired: +MEM.expired === 1, days: MEM.days_left == null ? null : +MEM.days_left };
   };
-  const renderMember = () => {
+  /** A verified, current member doesn't need where-they-are-from or date of birth, so those fields step aside (they return if the match fails). */
+  const hideFields = () => { const s = mstate(); return $('#ismem').checked && s.found && s.nameOk && !s.expired; };
+  const applyHide = () => {
+    const hide = hideFields();
+    $('#origwrap').style.display = hide ? 'none' : ''; $('#dobwrap').style.display = hide ? 'none' : '';
+    if (hide) { $('#ovr').style.display = 'none'; $('#guard').innerHTML = ''; } else toggleOrig();
+  };
+  const renderMember0 = () => {
     const el = $('#mstat'), s = mstate();
     if (!s.found) { el.innerHTML = memberAsked && $('#mno').value.trim() ? '<div class="alert">Member number not found on this course\'s member list. They will be checked in as a <b>visitor</b> (green fee payable).</div>' : ''; return; }
     if (!s.nameOk) { el.innerHTML = `<div class="found" id="usem"><b>Member record found: ${esc(MEM.first_name)} ${esc(MEM.last_name)}</b>${MEM.member_no ? ' · #' + esc(MEM.member_no) : ''}<br><span class="mut">Tap to use these details. The name must match the member record to count as a member.</span></div>`; $('#usem').onclick = fillMember; return; }
@@ -165,8 +199,15 @@ function golferForm(g = {}) {
       ${soon ? `<div class="alert">⚠ <b>Membership expires ${s.days === 0 ? 'today' : 'in ' + s.days + ' day' + (s.days === 1 ? '' : 's')} (${fmtD(MEM.expires_on)}).</b> Please remind them to renew.</div>` : ''}
       <label class="chk"><input type="checkbox" id="mcard"> I have seen their member card or photo ID</label>`;
   };
+  const renderMember = () => {
+    renderMember0();
+    const s = mstate();
+    if (s.found && s.nameOk && !s.expired && !$('#ismem').checked) { $('#ismem').checked = true; $('#mfind').style.display = ''; } // found on the list: tick it for them
+    if ($('#ismem').checked && memberAsked && !MEM && !$('#mstat').innerHTML) $('#mstat').innerHTML = '<div class="alert">We could not find them on this course\'s member list. Try the name search above, or check them in as a <b>visitor</b>.</div>';
+    applyHide();
+  };
   const fillMember = () => { $('#fn').value = MEM.first_name; $('#ln').value = MEM.last_name; if (!$('#em').value) $('#em').value = MEM.email || ''; if (!$('#mobile').value) $('#mobile').value = MEM.mobile || ''; if (MEM.member_no) $('#mno').value = MEM.member_no; renderMember(); };
-  const fill = x => { $('#fn').value = x.first_name; $('#ln').value = x.last_name; $('#em').value = x.email || ''; $('#co').value = x.country || ''; $('#orig').value = isFiji(x.country) ? 'local' : 'overseas'; toggleOrig(); $('#ho').value = x.hotel || $('#ho').value; $('#ro').value = x.room || $('#ro').value; $('#dob').value = x.dob || ''; $('#mk').checked = !!+x.marketing_optin; $('#found').innerHTML = ''; renderMember(); };
+  const fill = x => { if (x.mobile) $('#mobile').value = x.mobile; $('#fn').value = x.first_name; $('#ln').value = x.last_name; $('#em').value = x.email || ''; $('#co').value = x.country || ''; $('#orig').value = isFiji(x.country) ? 'local' : 'overseas'; toggleOrig(); $('#ho').value = x.hotel || $('#ho').value; $('#ro').value = x.room || $('#ro').value; $('#dob').value = x.dob || ''; $('#mk').checked = !!+x.marketing_optin; $('#found').innerHTML = ''; renderMember(); };
   const lookup = guard(async () => {
     const m = $('#mobile').value, no = $('#mno').value.trim();
     if (m.replace(/\D/g, '').length < 6 && !no) return;
@@ -179,17 +220,36 @@ function golferForm(g = {}) {
     renderMember();
   });
   $('#mobile').onblur = lookup; $('#mno').onblur = lookup;
+  // returning guests: a few letters of the name, or the mobile number, brings their saved details up
+  let gl = [], gt;
+  const gsearch = guard(async () => {
+    const q = $('#gs').value.trim(); if (q.length < 2) { $('#gres').innerHTML = ''; return; }
+    gl = (await api('guests/search', { params: { q } })).guests;
+    $('#gres').innerHTML = gl.length ? gl.map((x, i) => `<div class="found" data-g="${i}"><b>${esc(x.first_name)} ${esc(x.last_name)}</b> · ${esc(x.mobile)}${x.hotel ? ' · ' + esc(x.hotel) : x.country ? ' · ' + esc(x.country) : ''}<br><span class="mut">${+x.visits} visit${+x.visits === 1 ? '' : 's'} · tap to fill in their details</span>${x.alert_note ? `<div class="alert">⚠ ${esc(x.alert_note)}</div>` : ''}</div>`).join('') : '<p class="mut">No matching guest yet. Fill in the details below.</p>';
+  });
+  $('#gs').oninput = () => { clearTimeout(gt); gt = setTimeout(gsearch, 250); };
+  $('#gres').onclick = e => { const el = e.target.closest('[data-g]'); if (!el) return; fill(gl[+el.dataset.g]); $('#gres').innerHTML = ''; $('#gs').value = ''; lookup(); };
   $('#fn').oninput = $('#ln').oninput = renderMember;
+  // "I'm a member": find them by name (they may not know their number); the details and number fill in from the list
+  let ml = [], mt;
+  const mfind = guard(async () => {
+    const q = $('#mfq').value.trim(); if (q.length < 2) { $('#mfres').innerHTML = ''; return; }
+    ml = (await api('members/check', { params: { q } })).members;
+    $('#mfres').innerHTML = ml.length ? ml.map((x, i) => `<div class="found" data-m="${i}"><b>${esc(x.first_name)} ${esc(x.last_name)}</b>${x.member_no ? ' · #' + esc(x.member_no) : ''}<br><span class="mut">${+x.expired ? '✖ Expired ' + fmtD(x.expires_on) : x.expires_on ? 'Current until ' + fmtD(x.expires_on) : 'Current'} · tap to use</span></div>`).join('') : '<p class="mut">Not on the member list. Check the spelling, or check them in as a visitor.</p>';
+  });
+  $('#mfq').oninput = () => { clearTimeout(mt); mt = setTimeout(mfind, 250); };
+  $('#mfres').onclick = e => { const el = e.target.closest('[data-m]'); if (!el) return; const x = ml[+el.dataset.m]; $('#fn').value = x.first_name; $('#ln').value = x.last_name; if (x.member_no) $('#mno').value = x.member_no; $('#mfres').innerHTML = ''; $('#mfq').value = ''; lookup(); };
+  $('#ismem').onchange = () => { $('#mfind').style.display = $('#ismem').checked ? '' : 'none'; if ($('#ismem').checked) { lookup(); setTimeout(() => $('#mfq')?.focus(), 50); } renderMember(); };
   if (g.mobile || g.member_no || main) lookup();
   const read = () => {
     const s = mstate();
     return {
-      mobile: $('#mobile').value.trim(), member_no: $('#mno').value.trim(), first_name: $('#fn').value.trim(), last_name: $('#ln').value.trim(), email: $('#em').value.trim(), country: $('#orig').value === 'local' ? 'Fiji' : $('#co').value.trim(),
-      hotel: $('#orig').value === 'local' ? '' : $('#ho').value.trim(), room: $('#orig').value === 'local' ? '' : $('#ro').value.trim(), dob: $('#dob').value, marketing_optin: $('#mk').checked, guardian_name: $('#gd')?.value.trim() || '',
+      mobile: $('#mobile').value.trim(), member_no: $('#mno').value.trim(), first_name: $('#fn').value.trim(), last_name: $('#ln').value.trim(), email: $('#em').value.trim(), country: hideFields() ? '' : $('#orig').value === 'local' ? 'Fiji' : $('#co').value.trim(),
+      hotel: hideFields() || $('#orig').value === 'local' ? '' : $('#ho').value.trim(), room: hideFields() || $('#orig').value === 'local' ? '' : $('#ro').value.trim(), dob: hideFields() ? '' : $('#dob').value, marketing_optin: $('#mk').checked, guardian_name: $('#gd')?.value.trim() || '',
       card_checked: !!$('#mcard')?.checked, member_ok: !!(s.found && s.nameOk && !s.expired && $('#mcard')?.checked),
     };
   };
-  const under18 = () => { const d = $('#dob').value; return d && (Date.now() - new Date(d)) / 31557600000 < 18; };
+  const under18 = () => { if (hideFields()) return false; const d = $('#dob').value; return d && (Date.now() - new Date(d)) / 31557600000 < 18; };
   $('#dob').onchange = () => { $('#guard').innerHTML = under18() ? '<label>Parent / guardian full name (they sign below) *</label><input id="gd">' : ''; $('#guard').className = ''; };
   const validate = () => {
     const r = read(), s = mstate();
@@ -285,7 +345,7 @@ async function assetStep() {
       const cn = W.assets.find(a => a.id === W.cart)?.name, kn = W.assets.find(a => a.id === W.clubs)?.name;
       const extra = W.items.map(id => W.assets.find(a => a.id === id)?.name).filter(Boolean).join(', ');
       view(`<div class="card done"><div class="tick">✓</div><h2>Checked in</h2><p style="font-size:24px;margin:0"><b>${esc(W.golfers[0].first_name)} ${esc(W.golfers[0].last_name)}</b></p>
-        <div class="cartno">${cn ? '🛺 ' + esc(cn) : 'Walking'}</div><p style="font-size:20px;margin:0">${kn ? '🏌 ' + esc(kn) : 'Own clubs'}</p>${extra ? `<p style="font-size:18px;margin:6px 0 0">${esc(extra)}</p>` : ''}${W.bags ? `<p class="mut" style="margin:6px 0 0">Bag ${esc(W.bags)}</p>` : ''}<p class="mut">${W.fee === 'member' ? 'Verified member: no green fee. ' : ''}Hire total: ${money(r.hire_fee)}</p></div><div class="bar"><button class="p" id="h">Done</button></div>`);
+        <div class="cartno">${cn ? '🛺 ' + esc(cn) : 'Walking'}</div><p style="font-size:20px;margin:0">${kn ? '🏌 ' + esc(kn) : 'Own clubs'}</p>${extra ? `<p style="font-size:18px;margin:6px 0 0">${esc(extra)}</p>` : ''}${W.bags ? `<p class="mut" style="margin:6px 0 0">Bag ${esc(W.bags)}</p>` : ''}<p class="mut">${W.fee === 'member' ? 'Verified member: no green fee. ' : ''}Hire total: ${money(r.hire_fee)}</p>${r.emailing ? '<p class="mut">📧 A copy of the signed agreement is being emailed.</p>' : ''}</div><div class="bar"><button class="p" id="h">Done</button></div>`);
       $('#h').onclick = home;
     } catch (e) { $('#done').disabled = false; throw e; }
   });
@@ -345,8 +405,14 @@ const detail = guard(async (id, back) => {
   const c = await api('checkins/get', { params: { id } });
   view(`<div class="card"><h2>Check-in #${c.id}</h2><p>${fmtDT(c.checked_in_at)} · ${c.holes} holes · ${esc(c.cart_name || 'walking')} · ${esc(c.clubs_name || 'own clubs')}${c.items.length ? ' · ' + c.items.map(i => esc(i.name)).join(', ') : ''}${c.bags ? ' · bag ' + esc(c.bags) : ''} · ${money(c.hire_fee)} (${esc(c.fee_status)})<br><span class="mut">Checked in by ${esc(c.staff_name)} · terms v${c.terms_version}</span></p>
    ${c.returned_at ? `<p>Returned ${fmtDT(c.returned_at)} – <b>${esc(c.return_condition)}</b> ${esc(c.return_note || '')}</p>${c.return_photo ? `<img src="${c.return_photo}" style="max-width:100%;border-radius:8px">` : ''}` : '<p><span class="tag o">Still out</span></p>'}
-   <h3>Signed golfers</h3>${c.golfers.map(g => `<div class="card"><b>${esc(g.first_name)} ${esc(g.last_name)}</b> ${g.is_main == 1 ? '(main hirer)' : ''}${g.guest_type === 'member' ? ` <span class="tag">Member${g.member_no ? ' #' + esc(g.member_no) : ''}</span>` : ''}<div class="mut">${esc(g.mobile)} ${esc(g.email || '')} · signed ${fmtDT(g.signed_at)}${g.guardian_name ? ' · guardian ' + esc(g.guardian_name) : ''}</div><img class="sigimg" src="${g.signature}"></div>`).join('')}
+   <h3>Signed golfers</h3>${c.golfers.map(g => `<div class="card"><b>${esc(g.first_name)} ${esc(g.last_name)}</b> ${g.is_main == 1 ? '(main hirer)' : ''}${g.guest_type === 'member' ? ` <span class="tag">Member${g.member_no ? ' #' + esc(g.member_no) : ''}</span>` : ''}<div class="mut">${esc(g.mobile)} ${esc(g.email || '')} · signed ${fmtDT(g.signed_at)}${g.guardian_name ? ' · guardian ' + esc(g.guardian_name) : ''}</div><img class="sigimg" src="${g.signature}">
+     ${(c.emails || []).filter(m => m.golfer_id == g.golfer_id).map(m => `<div class="mut">📧 ${m.status === 'sent' ? 'Emailed to' : 'Email to'} ${esc(m.to_email)}${m.status === 'sent' ? '' : ' <b style="color:var(--warn)">failed</b>'} · ${fmtDT(m.sent_at)}</div>`).join('')}
+     ${can('history') ? `<p class="noprint" style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 0"><a class="linkbtn" href="${API}?r=checkins/pdf&id=${g.golfer_id}&course=${CID}" target="_blank" rel="noopener">⬇ PDF copy</a><button type="button" class="mailcopy" data-g="${g.golfer_id}" data-e="${esc(g.email || '')}">📧 Email a copy</button></p>` : ''}</div>`).join('')}
    <h3>Terms accepted</h3><div class="terms">${esc(c.terms)}</div><p><button onclick="print()">Print</button></p></div>`, 'Check-in', back);
+  document.querySelectorAll('.mailcopy').forEach(b => b.onclick = guard(async () => {
+    const to = prompt('Email a PDF copy of the signed agreement to:', b.dataset.e || ''); if (!to) return;
+    await api('checkins/email', { method: 'POST', body: { id: +b.dataset.g, to: to.trim() } }); toast('Copy emailed to ' + to.trim()); detail(id, back);
+  }));
 });
 
 /* ---------------- dashboard ---------------- */
@@ -488,12 +554,12 @@ const dashboard = guard(async tab => {
 
 /* ---------------- settings ---------------- */
 function settings(tab) {
-  const TABS = [...(can('fleet') ? [['fleet', 'Carts & clubs']] : []), ...(can('members') ? [['members', 'Members']] : []), ...(isCourseAdmin() ? [['users', 'Team'], ['access', 'Access'], ['timing', 'Round times']] : []), ...(isAdmin() ? [['terms', 'Terms'], ['courses', 'Courses']] : []), ...(can('export') ? [['export', 'Export']] : [])];
+  const TABS = [...(can('fleet') ? [['fleet', 'Carts & clubs']] : []), ...(can('members') ? [['members', 'Members']] : []), ...(isCourseAdmin() ? [['users', 'Team'], ['access', 'Access'], ['email', 'Email'], ['timing', 'Round times']] : []), ...(isAdmin() ? [['terms', 'Terms'], ['courses', 'Courses']] : []), ...(can('export') ? [['export', 'Export']] : [])];
   if (!TABS.length) return toast('Nothing in Settings is open to you. Ask your admin.', true);
   if (!TABS.some(([k]) => k === tab)) tab = TABS[0][0];
   view(`<div class="tabs">${TABS.map(([k, l]) => `<button class="${tab === k ? 'on' : ''}" data-t="${k}">${l}</button>`).join('')}</div><div id="pane"></div>`, 'Settings', home);
   document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => settings(b.dataset.t));
-  guard(async () => ({ fleet, terms: termsPane, users: usersPane, access: accessPane, timing: timingPane, courses: coursesPane, members: membersPane, export: exportPane })[tab]())();
+  guard(async () => ({ fleet, terms: termsPane, users: usersPane, access: accessPane, email: emailPane, timing: timingPane, courses: coursesPane, members: membersPane, export: exportPane })[tab]())();
 }
 async function fleet() {
   const { assets } = await api('assets', { params: { all: 1 } });
@@ -693,6 +759,86 @@ const cartBoard = guard(async () => {
   });
 });
 
+/* ---------------- email settings (signed-agreement copies) ---------------- */
+/** Promo banner picked in the browser: scaled to at most 1200 px wide, flattened onto white and saved as a JPEG (keeps the emailed PDF small). */
+function promoData(file) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => {
+      const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height, s = Math.min(1, 1200 / w);
+      const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(w * s)); c.height = Math.max(1, Math.round(h * s));
+      const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(img, 0, 0, c.width, c.height);
+      res({ url: c.toDataURL('image/jpeg', 0.86), w: c.width, h: c.height });
+    };
+    img.onerror = () => rej(new Error('Could not read that image'));
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+async function emailPane() {
+  const d = await api('email/get'), c = d.course || {}, sy = d.system || {}, sa = d.sending_as;
+  const own = c.use_system !== undefined && +c.use_system === 0, enabled = c.enabled === undefined || +c.enabled === 1;
+  const acct = (p, v) => `<div class="row"><div><label for="${p}from">Sending address</label><input id="${p}from" type="email" inputmode="email" autocapitalize="none" value="${esc(v.from_email || '')}" placeholder="noreply@yourclub.com"></div>
+    <div><label for="${p}method">Method</label><select id="${p}method"><option value="mail">Standard server mail</option><option value="smtp">SMTP account (best for your own domain)</option></select></div></div>
+    <div id="${p}smtp"><div class="row"><div><label for="${p}host">SMTP server</label><input id="${p}host" autocapitalize="none" value="${esc(v.smtp_host || '')}" placeholder="mail.yourclub.com"></div><div><label for="${p}port">Port</label><input id="${p}port" type="number" value="${esc(v.smtp_port || 587)}"></div></div>
+      <div class="row"><div><label for="${p}sec">Security</label><select id="${p}sec"><option value="tls">STARTTLS (usually port 587)</option><option value="ssl">SSL/TLS (usually port 465)</option><option value="none">None (not recommended)</option></select></div><div></div></div>
+      <div class="row"><div><label for="${p}user">Username</label><input id="${p}user" autocomplete="off" autocapitalize="none" value="${esc(v.smtp_user || '')}"></div><div><label for="${p}pass">Password</label><input id="${p}pass" type="password" autocomplete="new-password" placeholder="${v.has_pass ? 'saved: leave blank to keep it' : ''}"></div></div></div>`;
+  const test = id => `<div class="row" style="align-items:end"><div><label for="${id}to">Send a test email to</label><input id="${id}to" type="email" inputmode="email" autocapitalize="none" placeholder="you@example.com"></div><div><button type="button" id="${id}go">Send test email</button></div></div><p class="mut">The test uses what is <b>saved</b> above, so save first.</p>`;
+  $('#pane').innerHTML = `<div class="card"><h2>Signed-agreement emails · ${esc(courseName())}</h2>
+    <p class="mut">When a guest gives an email address at check-in, they are sent a PDF copy of what they signed. Currently sending as <b>${esc(sa.name)}</b> &lt;${esc(sa.from)}&gt; through the <b>${sa.source === 'own' ? "course's own" : 'system'}</b> email${sa.method === 'smtp' ? ' (SMTP)' : ''}${sa.enabled ? '' : '. <span style="color:var(--warn)">Emailing is switched off for this course.</span>'}.</p>
+    <label class="chk"><input id="c_on" type="checkbox" ${enabled ? 'checked' : ''}> Email guests a PDF copy of what they sign</label>
+    <div class="row"><div><label for="c_name">Sender name</label><input id="c_name" value="${esc(c.from_name || '')}" placeholder="${esc(courseFull())}"></div><div><label for="c_reply">Replies go to</label><input id="c_reply" type="email" inputmode="email" autocapitalize="none" value="${esc(c.reply_to || '')}" placeholder="proshop@yourclub.com"></div></div>
+    <h3>Which email account sends it</h3>
+    <label class="chk"><input type="radio" name="c_src" value="system" ${own ? '' : 'checked'}> Use the system email <span class="mut">(recommended: nothing to set up)</span></label>
+    <label class="chk"><input type="radio" name="c_src" value="own" ${own ? 'checked' : ''}> Use this course's own email account</label>
+    <div id="c_own" style="${own ? '' : 'display:none'}">${acct('c_', c)}</div>
+    <p><button class="p" id="c_save">Save email settings</button></p>${test('c_')}</div>
+
+   <div class="card"><h2>Promotional banner on the PDF</h2>
+    <p class="mut">A banner printed at the foot of every emailed agreement, for offers, events or a new package. You can change it any time: new emails use the new banner straight away.</p>
+    <div class="promo-prev">${d.promo ? `<img src="${d.promo}" alt="Promotional banner">` : '<span class="mut">No banner yet</span>'}</div>
+    <div class="sizing"><b>Recommended size: 1200 × 300 pixels</b> (a wide 4:1 banner).<ul>
+      <li>JPEG or PNG, under about 400 KB. Saved as a JPEG for you.</li>
+      <li>It prints the full width of the page (about 17 cm), up to about 5 cm tall. Taller images are shrunk to fit.</li>
+      <li>Keep words large and away from the edges. Fine print will be unreadable at this size.</li>
+      <li>Use a solid or photo background, not transparency: the PDF is printed on white.</li></ul></div>
+    <p id="pinfo" class="mut"></p>
+    <p style="display:flex;gap:10px;flex-wrap:wrap"><label class="upl">${d.promo ? 'Replace banner' : 'Upload banner'}<input id="pfile" type="file" accept="image/*" hidden></label>${d.promo ? '<button type="button" id="prm" class="d">Remove banner</button>' : ''}</p></div>
+
+   ${d.is_head_office ? `<div class="card"><h2>System email · all courses</h2>
+    <p class="mut">The default account that courses use unless they choose their own. Head office only.</p>
+    <div class="row"><div><label for="s_name">Sender name (used if a course has none)</label><input id="s_name" value="${esc(sy.from_name || '')}"></div><div><label for="s_reply">Replies go to (default)</label><input id="s_reply" type="email" inputmode="email" autocapitalize="none" value="${esc(sy.reply_to || '')}"></div></div>
+    ${acct('s_', sy)}<p><button class="p" id="s_save">Save system email</button></p>${test('s_')}</div>` : ''}`;
+
+  const setSel = (id, v) => { const el = $('#' + id); if (el) el.value = v; };
+  setSel('c_method', c.method || 'mail'); setSel('c_sec', c.smtp_secure || 'tls'); setSel('s_method', sy.method || 'mail'); setSel('s_sec', sy.smtp_secure || 'tls');
+  const showSmtp = p => { const el = $('#' + p + 'smtp'); if (el) el.style.display = $('#' + p + 'method').value === 'smtp' ? '' : 'none'; };
+  ['c_', 's_'].forEach(p => { if ($('#' + p + 'method')) { showSmtp(p); $('#' + p + 'method').onchange = () => showSmtp(p); } });
+  document.querySelectorAll('input[name=c_src]').forEach(r => r.onchange = () => { $('#c_own').style.display = document.querySelector('input[name=c_src]:checked').value === 'own' ? '' : 'none'; });
+  const grab = p => ({ from_email: $('#' + p + 'from').value, method: $('#' + p + 'method').value, smtp_host: $('#' + p + 'host').value, smtp_port: $('#' + p + 'port').value, smtp_secure: $('#' + p + 'sec').value, smtp_user: $('#' + p + 'user').value, smtp_pass: $('#' + p + 'pass').value });
+  $('#c_save').onclick = guard(async () => {
+    await api('email/save', { method: 'POST', body: { scope: 'course', enabled: $('#c_on').checked, use_system: document.querySelector('input[name=c_src]:checked').value === 'system', from_name: $('#c_name').value, reply_to: $('#c_reply').value, ...grab('c_') } });
+    toast('Email settings saved'); emailPane();
+  });
+  if ($('#s_save')) $('#s_save').onclick = guard(async () => {
+    await api('email/save', { method: 'POST', body: { scope: 'system', from_name: $('#s_name').value, reply_to: $('#s_reply').value, ...grab('s_') } });
+    toast('System email saved'); emailPane();
+  });
+  const runTest = (p, scope) => guard(async () => {
+    const to = $('#' + p + 'to').value.trim(); if (!to) throw new Error('Type the address to send the test to');
+    $('#' + p + 'go').disabled = true;
+    try { await api('email/test', { method: 'POST', body: { scope, to } }); toast('Test email sent to ' + to); } finally { $('#' + p + 'go').disabled = false; }
+  });
+  $('#c_go').onclick = runTest('c_', 'course'); if ($('#s_go')) $('#s_go').onclick = runTest('s_', 'system');
+  $('#pfile').onchange = guard(async e => {
+    const f = e.target.files[0]; if (!f) return;
+    const { url, w, h } = await promoData(f), ratio = w / h;
+    $('#pinfo').textContent = `${w} × ${h} px` + (ratio < 2.2 ? ': this is fairly square, so it will print smaller than the full width. A 4:1 banner fills the page better.' : ratio > 6 ? ': very wide, so text may be tiny when printed.' : ': good proportions.');
+    await api('course/promo', { method: 'POST', body: { promo: url } }); toast('Banner saved'); emailPane();
+  });
+  if ($('#prm')) $('#prm').onclick = guard(async () => { await api('course/promo', { method: 'POST', body: { promo: '' } }); toast('Banner removed'); emailPane(); });
+}
+
 /** Logo picked in the browser: scaled down and kept as PNG (so transparency survives), stored with the course. */
 function logoData(file, max = 360) {
   return new Promise((res, rej) => {
@@ -731,7 +877,7 @@ async function coursesPane() {
       <label>Full name (header, guest screens)</label><input class="fn" value="${esc(c.full_name || '')}" placeholder="e.g. Natadola Bay Golf Course"></td>
     <td><label><input class="tn" type="checkbox" ${+c.tennis ? 'checked' : ''}> Tennis hire</label><label><input class="sh" type="checkbox" ${+c.shoes ? 'checked' : ''}> Shoe hire</label><label><input class="rc" type="checkbox" ${+c.room_charge ? 'checked' : ''}> Charge to room</label><label><input class="ac" type="checkbox" ${c.active === undefined || +c.active ? 'checked' : ''}> Active</label></td>
     <td><button class="sv p">${c.id ? 'Save' : 'Add'}</button>${c.id ? ` <button class="setup" data-c="${c.id}">Set up fleet →</button>` : ''}</td></tr>`;
-  $('#pane').innerHTML = `<div class="card"><h2>Courses</h2><p class="mut">Each course has its own carts, club sets, member list, check-ins, terms and dashboard. The <b>logo</b> and <b>full name</b> show in the tablet header. <b>Tennis hire</b>, <b>Shoe hire</b> and <b>Charge to room</b> switch those extras on for a course (Natadola has no tennis). Room charging is off until you tick it, and then only appears for guests who give a hotel. A new course starts with no fleet: use "Set up fleet".</p><table>${[...COURSES, { name: '' }].map(row).join('')}</table></div>`;
+  $('#pane').innerHTML = `<div class="card"><h2>Courses</h2><p class="mut">Each course has its own carts, club sets, member list, check-ins, terms and dashboard. The <b>logo</b> and <b>full name</b> show in the tablet header and on the emailed PDF. <b>Logo size:</b> a PNG with a transparent background, about <b>600 × 200 pixels</b> (3:1), under 200 KB; it is trimmed and scaled for you. <b>Tennis hire</b>, <b>Shoe hire</b> and <b>Charge to room</b> switch those extras on for a course (Natadola has no tennis). Room charging is off until you tick it, and then only appears for guests who give a hotel. A new course starts with no fleet: use "Set up fleet".</p><table>${[...COURSES, { name: '' }].map(row).join('')}</table></div>`;
   document.querySelectorAll('button.setup').forEach(b => b.onclick = () => { CID = +b.dataset.c; store.set('bula_course', CID); settings('fleet'); });
   document.querySelectorAll('input.lf').forEach(inp => inp.onchange = guard(async () => {
     const f = inp.files[0]; if (!f) return;

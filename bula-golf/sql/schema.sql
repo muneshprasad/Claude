@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS courses (
   full_name VARCHAR(150) NULL,            -- shown in the tablet header and on guest-facing screens
   logo MEDIUMTEXT NULL,                   -- data URL (png/jpeg/webp), resized in the browser
   logo_at DATETIME NULL,
+  promo MEDIUMTEXT NULL,                  -- banner printed at the foot of emailed PDFs
+  promo_at DATETIME NULL,
   tennis TINYINT(1) NOT NULL DEFAULT 0,   -- course hires tennis racquets / tennis shoes
   shoes TINYINT(1) NOT NULL DEFAULT 0,    -- course hires golf shoes
   room_charge TINYINT(1) NOT NULL DEFAULT 0,   -- guests can have fees charged to their hotel room (head office switches this on)
@@ -142,6 +144,35 @@ CREATE TABLE IF NOT EXISTS members (
   KEY idx_mobile (course_id, mobile),
   KEY idx_name (course_id, last_name, first_name),
   KEY idx_exp (course_id, expires_on)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Emailed copies of signed agreements.
+CREATE TABLE IF NOT EXISTS email_log (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  checkin_id INT NOT NULL,
+  golfer_id INT NOT NULL,
+  to_email VARCHAR(150) NOT NULL,
+  status ENUM('sent','failed') NOT NULL,
+  detail VARCHAR(255) NULL,
+  sent_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_checkin (checkin_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Email settings: course_id 0 = system default; a course can use that or its own account.
+CREATE TABLE IF NOT EXISTS email_settings (
+  course_id INT NOT NULL PRIMARY KEY,
+  enabled TINYINT(1) NOT NULL DEFAULT 1,
+  use_system TINYINT(1) NOT NULL DEFAULT 1,
+  method ENUM('mail','smtp') NOT NULL DEFAULT 'mail',
+  from_name VARCHAR(100) NULL,
+  from_email VARCHAR(150) NULL,
+  reply_to VARCHAR(150) NULL,
+  smtp_host VARCHAR(150) NULL,
+  smtp_port INT NULL,
+  smtp_secure ENUM('none','ssl','tls') NOT NULL DEFAULT 'tls',
+  smtp_user VARCHAR(150) NULL,
+  smtp_pass TEXT NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS terms (
