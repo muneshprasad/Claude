@@ -198,6 +198,22 @@ function terms_for(int $course): array {
     return q('SELECT version, body FROM terms ORDER BY (course_id = ?) DESC, (course_id IS NULL) DESC, version DESC LIMIT 1', [$course])->fetch() ?: ['version' => 0, 'body' => ''];
 }
 
+/** Which green-fee rate applies to a golfer: a verified member, a resort/hotel guest, a Fiji resident, or any other visitor. */
+function rate_category(bool $isMember, ?string $hotel, ?string $country): string {
+    if ($isMember) return 'member';
+    if ($hotel !== null && trim($hotel) !== '') return 'resort';
+    if (in_array(strtolower(trim((string)$country)), ['fiji', 'fijian', 'fiji islands'], true)) return 'resident';
+    return 'visitor';
+}
+
+/** The course's rate card as [holes][category] => amount (empty until an admin sets one). */
+function rates_for(int $course): array {
+    $r = [9 => [], 18 => []];
+    try { foreach (q('SELECT holes, category, amount FROM rates WHERE course_id=?', [$course])->fetchAll() as $x) $r[(int)$x['holes']][$x['category']] = (float)$x['amount']; }
+    catch (Throwable $e) { /* rates table not created yet */ }
+    return $r;
+}
+
 /** SQL fragment: check-in "c" currently holds asset "a" (cart, clubs, or an extra hire item such as shoes/racquet). */
 const HOLDS_SQL = "(c.cart_id = a.id OR c.clubs_id = a.id OR c.id IN (SELECT i.checkin_id FROM checkin_items i WHERE i.asset_id = a.id))";
 

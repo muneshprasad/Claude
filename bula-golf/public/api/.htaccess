@@ -1,5 +1,5 @@
 # Block direct access to config and library files
-<FilesMatch "^(config|config\.sample|lib|pdf)\.php$">
+<FilesMatch "^(config|config\.sample|lib|pdf|reports|jobs)\.php$">
   Require all denied
 </FilesMatch>
 Options -Indexes

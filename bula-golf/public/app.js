@@ -16,16 +16,17 @@ function pickCourse() {
   CID = ME?.course_id || (COURSES.some(c => c.id == saved) ? saved : COURSES[0]?.id || 0);
 }
 
-async function api(route, { method = 'GET', body, params } = {}) {
+async function api(route, { method = 'GET', body, params, quiet = false } = {}) {
   const qs = new URLSearchParams({ r: route, ...(params || {}) });
-  let res;
+  let res; const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 25000); // a connection that hangs counts as no connection
   try {
     res = await fetch(`${API}?${qs}`, {
+      signal: ctl.signal,
       method, credentials: 'same-origin',
       headers: { 'X-Requested-With': 'bula', ...(CID ? { 'X-Bula-Course': CID } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
       body: body ? JSON.stringify(body) : undefined,
     });
-  } catch { throw new Error('No connection to the server. Check Wi-Fi and try again.'); }
+  } catch { const err = new Error('No connection to the server. Check Wi-Fi and try again.'); err.offline = true; err.quiet = quiet; throw err; } finally { clearTimeout(timer); }
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && ME) { ME = null; login(); throw new Error('Please sign in again'); }
   if (!res.ok) throw new Error(data.error || 'Something went wrong');
@@ -35,7 +36,7 @@ function toast(msg, err = false) {
   const t = $('#toast'); t.textContent = msg; t.className = 'show' + (err ? ' err' : '');
   clearTimeout(toast.t); toast.t = setTimeout(() => t.className = '', err ? 4500 : 2200);
 }
-const guard = fn => async (...a) => { try { await fn(...a); } catch (e) { toast(e.message, true); } };
+const guard = fn => async (...a) => { try { await fn(...a); } catch (e) { if (!e.quiet) toast(e.message, true); } };
 const money = n => `${CUR} ${Number(n || 0).toFixed(2)}`;
 const hm = s => s ? s.slice(11, 16) : '';
 const fmtDT = s => s ? new Date(s.replace(' ', 'T')).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
@@ -56,6 +57,74 @@ let wake = null;
 const keepAwake = async () => { try { if ('wakeLock' in navigator && !wake && !document.hidden && ME) { wake = await navigator.wakeLock.request('screen'); wake.addEventListener('release', () => { wake = null; }); } } catch { /* denied or unsupported: fine */ } };
 document.addEventListener('visibilitychange', () => { if (!document.hidden) keepAwake(); });
 /** Roles: admin (head office, or one course's admin), supervisor, staff. What a supervisor or staff member may open is set per course by that course's admin (Settings > Access). */
+/* ---------------- working offline: saved on the tablet, sent when the connection comes back ---------------- */
+const LS = {
+  get: (k, d = null) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch { return false; } },
+};
+const newRef = () => { const b = crypto.getRandomValues(new Uint8Array(16)); return [...b].map(x => x.toString(16).padStart(2, '0')).join(''); };
+const isOffline = e => !!e?.offline;
+/** The last good copy of what staff need when the signal drops: the terms, the carts, the rates, who is out. Kept per course. */
+const cacheSet = (k, v) => LS.set(`bula_c_${CID}_${k}`, v);
+const cacheGet = k => LS.get(`bula_c_${CID}_${k}`);
+const QKEY = 'bula_queue';
+const queue = () => LS.get(QKEY, []);
+
+/** Save a check-in or return to send later. The signature and photos travel with it. */
+function queueAdd(route, body, label) {
+  const q = queue();
+  if (q.length >= 30) throw new Error('Too many unsent items on this tablet. Reconnect to Wi-Fi first.');
+  q.push({ id: newRef(), route, body, course: CID, label, at: Date.now(), error: null });
+  if (!LS.set(QKEY, q)) throw new Error('This tablet has no space left to save it. Reconnect to Wi-Fi first.');
+  queueBanner(); setTimeout(queueFlush, 4000);
+}
+
+let flushing = false;
+/** Send everything waiting, oldest first. Stops at the first sign the connection is still down. */
+async function queueFlush() {
+  if (flushing || !ME) return;
+  flushing = true;
+  try {
+    for (const it of queue()) {
+      if (it.error) continue; // needs a person: see the banner
+      const saved = CID; CID = it.course;
+      try { await api(it.route, { method: 'POST', body: it.body, quiet: true }); LS.set(QKEY, queue().filter(x => x.id !== it.id)); }
+      catch (e) {
+        if (isOffline(e) || e.message === 'Please sign in again') break; // not now: try again later
+        if (it.route === 'checkins/return' && /already returned/i.test(e.message)) { LS.set(QKEY, queue().filter(x => x.id !== it.id)); continue; } // sent twice: done
+        const q = queue(), x = q.find(z => z.id === it.id); if (x) { x.error = e.message; LS.set(QKEY, q); }
+      } finally { CID = saved; }
+    }
+  } finally { flushing = false; queueBanner(); }
+}
+
+function queueBanner() {
+  const q = queue(), bad = q.filter(x => x.error).length, off = navigator.onLine === false;
+  let el = document.getElementById('qbar');
+  if (!q.length && !off) { el?.remove(); return; }
+  if (!el) { el = document.createElement('button'); el.id = 'qbar'; el.type = 'button'; el.onclick = queueDialog; document.body.append(el); }
+  el.className = bad ? 'bad' : '';
+  el.textContent = bad ? `⚠ ${bad} item${bad > 1 ? 's' : ''} need${bad > 1 ? '' : 's'} attention` : q.length ? `${off ? '📶 Offline · ' : '⏳ '}${q.length} item${q.length > 1 ? 's' : ''} waiting to send` : '📶 Offline: using saved information';
+}
+
+function queueDialog() {
+  const q = queue(), m = document.createElement('div'); m.className = 'modal';
+  m.innerHTML = `<div><h2>Waiting to send</h2>${q.length ? q.map(it => `<div class="alert ${it.error ? 'bad' : ''}" style="margin:8px 0"><b>${esc(it.label)}</b><div class="mut">Saved ${new Date(it.at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}${it.error ? ' · ' + esc(it.error) : ' · will send automatically'}</div>
+      ${it.error ? `<button type="button" data-r="${it.id}">Try again</button><button type="button" class="d" data-d="${it.id}">Discard</button>` : ''}</div>`).join('') : `<p class="mut">${navigator.onLine === false ? 'There is no connection right now. Nothing is waiting; the tablet is using the last information it saved.' : 'Nothing is waiting.'}</p>`}
+    <p class="mut" style="font-size:13px">If a check-in can't be sent (for example its cart was given to someone else meanwhile), it stays here until someone decides what to do. A discarded check-in is gone for good.</p><button type="button" id="qx">Close</button></div>`;
+  document.body.append(m);
+  m.onclick = e => {
+    if (e.target === m || e.target.id === 'qx') return m.remove();
+    const r = e.target.closest('[data-r]'), d = e.target.closest('[data-d]');
+    if (r) { const l = queue(); const x = l.find(z => z.id === r.dataset.r); if (x) { x.error = null; LS.set(QKEY, l); } m.remove(); queueBanner(); queueFlush(); }
+    if (d && confirm('Discard this item? The guest would have to be checked in again.')) { LS.set(QKEY, queue().filter(z => z.id !== d.dataset.d)); m.remove(); queueBanner(); }
+  };
+}
+window.addEventListener('online', () => { queueBanner(); queueFlush(); });
+window.addEventListener('offline', queueBanner);
+setInterval(() => { if (queue().length) queueFlush(); }, 15000);
+setTimeout(queueBanner, 500);
+
 /** Keeps a long-running tablet current. iPad home-screen apps in particular hold an old copy for ages: ask the server if the app changed, every minute and whenever the app comes back to the front. */
 let APP_VER = null;
 const updateReady = () => {
@@ -119,7 +188,9 @@ function login() {
 /* ---------------- home ---------------- */
 async function home() {
   keepAwake();
-  const [act, ast] = await Promise.all([api('checkins/active'), api('assets')]).catch(() => [{ checkins: [] }, { assets: [] }]);
+  const [act, ast] = await Promise.all([api('checkins/active', { quiet: true }), api('assets', { quiet: true })])
+    .then(([a, s]) => { cacheSet('active', a.checkins); cacheSet('assets', s.assets); return [a, s]; })
+    .catch(() => [{ checkins: cacheGet('active') || [] }, { assets: cacheGet('assets') || [] }]); // offline: show what was last known
   const carts = ast.assets.filter(a => a.kind === 'cart'), free = carts.filter(a => a.status === 'available').length;
   view(`<div class="welcome"><small>${new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}</small><h2>${greet()}, ${esc(String(ME.name).split(' ')[0])}</h2></div><div class="home">
    <button class="big wide" id="new">${ico('plus')}<div>New check-in<small>${free} of ${carts.length} carts available</small></div></button>
@@ -141,8 +212,8 @@ async function home() {
 /* ---------------- check-in wizard ---------------- */
 let W;
 function startCheckin() {
-  W = { golfers: [], step: 1, cart: null, clubs: null, items: [], bags: '', holes: 18, fee: 'unpaid', tee: '', notes: '', terms: null, assets: [] };
-  api('terms/current').then(t => W.terms = t).catch(() => {});
+  W = { golfers: [], step: 1, cart: null, clubs: null, items: [], bags: '', holes: 18, fee: 'unpaid', tee: '', notes: '', terms: null, assets: [], ref: newRef() }; // ref: makes a re-sent check-in count once
+  api('terms/current', { quiet: true }).then(t => { W.terms = t; cacheSet('terms', t); }).catch(() => { W.terms = cacheGet('terms'); });
   golferForm();
 }
 const stepBar = n => `<div class="steps">${['Guest', 'Sign', 'Cart & clubs'].map((l, i) => `<span class="${i < n ? 'on' : ''}">${i + 1}. ${l}</span>`).join('')}</div>`;
@@ -211,7 +282,7 @@ function golferForm(g = {}) {
   const lookup = guard(async () => {
     const m = $('#mobile').value, no = $('#mno').value.trim();
     if (m.replace(/\D/g, '').length < 6 && !no) return;
-    const r = await api('guests/lookup', { params: { mobile: m, member_no: no } });
+    const r = await api('guests/lookup', { params: { mobile: m, member_no: no }, quiet: true });
     list = r.guests; MEM = r.member; memberAsked = true;
     $('#found').innerHTML = list.map((x, i) => `<div class="found" data-i="${i}"><b>Welcome back, ${esc(x.first_name)} ${esc(x.last_name)}</b> · visit #${+x.visits + 1}${x.last_clubs ? ' · last hired ' + esc(x.last_clubs) : ''}<br><span class="mut">Tap to fill in their details</span>
        ${x.alert_note ? `<div class="alert">⚠ ${esc(x.alert_note)}</div>` : ''}</div>`).join('');
@@ -224,7 +295,7 @@ function golferForm(g = {}) {
   let gl = [], gt;
   const gsearch = guard(async () => {
     const q = $('#gs').value.trim(); if (q.length < 2) { $('#gres').innerHTML = ''; return; }
-    gl = (await api('guests/search', { params: { q } })).guests;
+    gl = (await api('guests/search', { params: { q }, quiet: true })).guests;
     $('#gres').innerHTML = gl.length ? gl.map((x, i) => `<div class="found" data-g="${i}"><b>${esc(x.first_name)} ${esc(x.last_name)}</b> · ${esc(x.mobile)}${x.hotel ? ' · ' + esc(x.hotel) : x.country ? ' · ' + esc(x.country) : ''}<br><span class="mut">${+x.visits} visit${+x.visits === 1 ? '' : 's'} · tap to fill in their details</span>${x.alert_note ? `<div class="alert">⚠ ${esc(x.alert_note)}</div>` : ''}</div>`).join('') : '<p class="mut">No matching guest yet. Fill in the details below.</p>';
   });
   $('#gs').oninput = () => { clearTimeout(gt); gt = setTimeout(gsearch, 250); };
@@ -234,7 +305,7 @@ function golferForm(g = {}) {
   let ml = [], mt;
   const mfind = guard(async () => {
     const q = $('#mfq').value.trim(); if (q.length < 2) { $('#mfres').innerHTML = ''; return; }
-    ml = (await api('members/check', { params: { q } })).members;
+    ml = (await api('members/check', { params: { q }, quiet: true })).members;
     $('#mfres').innerHTML = ml.length ? ml.map((x, i) => `<div class="found" data-m="${i}"><b>${esc(x.first_name)} ${esc(x.last_name)}</b>${x.member_no ? ' · #' + esc(x.member_no) : ''}<br><span class="mut">${+x.expired ? '✖ Expired ' + fmtD(x.expires_on) : x.expires_on ? 'Current until ' + fmtD(x.expires_on) : 'Current'} · tap to use</span></div>`).join('') : '<p class="mut">Not on the member list. Check the spelling, or check them in as a visitor.</p>';
   });
   $('#mfq').oninput = () => { clearTimeout(mt); mt = setTimeout(mfind, 250); };
@@ -263,7 +334,7 @@ function golferForm(g = {}) {
 }
 
 async function signStep(i) {
-  if (!W.terms) W.terms = await api('terms/current');
+  if (!W.terms) { try { W.terms = await api('terms/current', { quiet: true }); cacheSet('terms', W.terms); } catch (e) { W.terms = cacheGet('terms'); if (!W.terms) throw new Error('No connection, and the terms have not been saved on this tablet yet. Connect to Wi-Fi once to load them.'); } }
   const g = W.golfers[i];
   view(`${stepBar(2)}<div class="card"><h2>Terms of hire &amp; signature</h2>
     <p class="mut">Golfer ${i + 1} of ${W.golfers.length}: <b>${esc(g.first_name)} ${esc(g.last_name)}</b>${g.guardian_name ? ' · signed by guardian ' + esc(g.guardian_name) : ''}</p>
@@ -295,7 +366,11 @@ function padFor(cv) {
 }
 
 async function assetStep() {
-  const { assets } = await api('assets'); W.assets = assets;
+  let assets; W.offlineAssets = false;
+  try { ({ assets } = await api('assets', { quiet: true })); cacheSet('assets', assets); }
+  catch (e) { if (!isOffline(e)) throw e; assets = cacheGet('assets'); if (!assets) throw new Error('No connection, and the carts have not been saved on this tablet yet. Connect to Wi-Fi once.'); W.offlineAssets = true; }
+  W.assets = assets;
+  if (!W.rates) { try { W.rates = (await api('rates/get', { quiet: true })).rates || {}; cacheSet('rates', W.rates); } catch { W.rates = cacheGet('rates') || {}; } }
   const carts = assets.filter(a => a.kind === 'cart'), clubs = assets.filter(a => a.kind === 'clubs');
   const sug = carts.find(a => a.status === 'available');
   if (W.cart === null && sug) W.cart = null; // staff must choose; suggestion is highlighted
@@ -305,14 +380,25 @@ async function assetStep() {
   }).join('') || '<span class="mut">None set up</span>';
   const hasHotel = feat().room && W.golfers.some(g => g.hotel); // room charging: only where head office enabled it, and only with a hotel
   if (!hasHotel && W.fee === 'room') W.fee = 'unpaid';
+  // what is owed: green fees from the course's rate card (the server works out the same amounts), plus any hire
+  const hold = +W.holes === 9 ? 9 : 18;
+  const catOf = g => g.member_ok ? 'member' : g.hotel ? 'resort' : /^fiji/i.test(g.country || '') ? 'resident' : 'visitor';
+  const CATN = { member: 'Member', resort: 'Resort / hotel guest', resident: 'Fiji resident', visitor: 'Visitor' };
+  const greenLines = W.golfers.map(g => { const c = catOf(g); return { g, c, amt: +(W.rates?.[hold]?.[c] || 0) }; });
+  const greenSum = greenLines.reduce((s, l) => s + l.amt, 0);
+  const hasRates = [9, 18].some(h => Object.values(W.rates?.[h] || {}).some(v => +v > 0));
+  const feeA = id => +(W.assets.find(a => a.id === id)?.fee || 0);
+  const hireNow = feeA(W.clubs) + W.items.reduce((s, id) => s + feeA(id), 0);
   const allMem = W.golfers.length > 0 && W.golfers.every(g => g.member_ok);
-  if (!allMem && W.fee === 'member') W.fee = 'unpaid'; else if (allMem && W.fee === 'unpaid') W.fee = 'member';
+  const memberFree = allMem && greenSum + hireNow < 0.005; // "member" payment only when nothing is payable
+  if (!memberFree && W.fee === 'member') W.fee = 'unpaid'; else if (memberFree && W.fee === 'unpaid') W.fee = 'member';
   const ft = feat(), shoes = ft.shoes ? assets.filter(a => a.kind === 'shoes') : [], tennis = ft.tennis ? assets.filter(a => a.kind === 'racquet') : [];
   const multi = list => list.map(a => {
     const off = a.status !== 'available';
     return `<div class="tile ${off ? 'off' : ''} ${W.items.includes(a.id) ? 'sel' : ''}" data-k="item" data-id="${a.id}" ${off ? 'data-off="1"' : ''}>${esc(a.name)}<small>${esc(a.description || '')} ${money(a.fee)}${off ? '<br>' + esc(a.status.replace('_', ' ')) : ''}</small></div>`;
   }).join('') || '<span class="mut">None set up</span>';
   view(`${stepBar(3)}<div class="card"><h2>${ft.shoes || ft.tennis ? 'Cart &amp; hire' : 'Cart &amp; club hire'}</h2>
+    ${W.offlineAssets ? '<div class="alert">📶 No connection. The carts below are as they were when this tablet last had a signal, so check a cart is really free. The check-in will be saved here and sent automatically when the connection returns.</div>' : ''}
     <h3>Golf cart ${sug ? `<span class="mut">— suggested: ${esc(sug.name)}</span>` : '<span class="mut">— none free</span>'}</h3>
     <div class="grid"><div class="tile ${W.cart === 0 ? 'sel' : ''}" data-k="cart" data-id="0">Walking<small>no cart</small></div>${tiles(carts, W.cart, 'cart')}</div>
     <h3>Club hire</h3>
@@ -321,12 +407,16 @@ async function assetStep() {
     ${ft.tennis ? `<h3>Tennis hire <span class="mut">— racquets and tennis shoes</span></h3><div class="grid">${multi(tennis)}</div>` : ''}
     <label>Bag number(s)</label><input id="bags" placeholder="e.g. 12, 14" value="${esc(W.bags)}">
     <div class="row"><div><label>Holes</label><select id="holes"><option>18</option><option ${W.holes === 9 ? 'selected' : ''}>9</option></select></div>
-    <div><label>Green fee</label><select id="fee">${allMem ? `<option value="member" ${W.fee === 'member' ? 'selected' : ''}>Member: no green fee</option>` : ''}<option value="unpaid" ${W.fee === 'unpaid' ? 'selected' : ''}>Collect at end</option><option value="paid" ${W.fee === 'paid' ? 'selected' : ''}>Paid</option>${hasHotel ? `<option value="room" ${W.fee === 'room' ? 'selected' : ''}>Charge to room</option>` : ''}</select></div></div>
+    <div><label>Payment</label><select id="fee">${memberFree ? `<option value="member" ${W.fee === 'member' ? 'selected' : ''}>Member: nothing to pay</option>` : ''}<option value="unpaid" ${W.fee === 'unpaid' ? 'selected' : ''}>Collect at end</option><option value="paid" ${W.fee === 'paid' ? 'selected' : ''}>Paid</option>${hasHotel ? `<option value="room" ${W.fee === 'room' ? 'selected' : ''}>Charge to room</option>` : ''}</select></div></div>
     <div class="row"><div><label>Tee time</label><input id="tee" type="time" value="${esc(W.tee)}"></div><div><label>Notes</label><input id="notes" value="${esc(W.notes)}"></div></div>
-    <h3 id="tot"></h3>
+    <div id="tot" class="pricebox"></div>
     </div><div class="bar"><button class="p" id="done">✔ Complete check-in</button></div>`, 'Cart & clubs', () => signStep(W.golfers.length - 1));
   const fee = id => W.assets.find(a => a.id === id)?.fee || 0;
-  const total = () => { $('#tot').textContent = `Hire total: ${money(+fee(W.clubs) +W.items.reduce((s, id) => s + +fee(id), 0))}`; };
+  const total = () => {
+    const hire = +fee(W.clubs) + W.items.reduce((s, id) => s + +fee(id), 0);
+    $('#tot').innerHTML = (hasRates ? greenLines.map(l => `<div class="pl"><span>${esc(l.g.first_name)} ${esc(l.g.last_name)}<small>${CATN[l.c]} · ${hold} holes</small></span><b>${money(l.amt)}</b></div>`).join('') + `<div class="pl sub"><span>Green fees</span><b>${money(greenSum)}</b></div>` : '')
+      + `<div class="pl"><span>Hire <small>clubs, shoes, tennis</small></span><b>${money(hire)}</b></div><div class="pl tot"><span>Total to pay</span><b>${money(greenSum + hire)}</b></div>`;
+  };
   total();
   document.querySelectorAll('.tile').forEach(t => t.onclick = () => {
     if (t.dataset.off) return toast('That one is not available', true);
@@ -337,15 +427,26 @@ async function assetStep() {
   });
   const keep = () => { W.holes = +$('#holes').value; W.fee = $('#fee').value; W.tee = $('#tee').value; W.notes = $('#notes').value; W.bags = $('#bags').value; };
   const assetStepRender = () => { const s = scrollY; assetStep().then(() => scrollTo(0, s)); };
+  $('#holes').onchange = () => { keep(); assetStepRender(); }; // 9 or 18 changes the green fee
   $('#done').onclick = guard(async () => {
     keep();
     $('#done').disabled = true;
     try {
-      const r = await api('checkins/create', { method: 'POST', body: { golfers: W.golfers, holes: W.holes, fee_status: W.fee, tee_time: W.tee, notes: W.notes, bags: W.bags, cart_id: W.cart || null, clubs_id: W.clubs || null, items: W.items } });
+      const payload = { golfers: W.golfers, holes: W.holes, fee_status: W.fee, tee_time: W.tee, notes: W.notes, bags: W.bags, cart_id: W.cart || null, clubs_id: W.clubs || null, items: W.items, client_ref: W.ref };
+      let r;
+      try { r = await api('checkins/create', { method: 'POST', body: payload }); }
+      catch (e) {
+        if (!isOffline(e)) throw e;
+        // no connection: keep the whole check-in (signatures included) on this tablet; it is sent, once, when the connection returns
+        queueAdd('checkins/create', payload, `${W.golfers[0].first_name} ${W.golfers[0].last_name} · check-in`);
+        const used = [W.cart, W.clubs, ...W.items].filter(Boolean); // so the same cart isn't offered again while offline
+        cacheSet('assets', (cacheGet('assets') || []).map(a => used.includes(a.id) ? { ...a, status: 'out' } : a));
+        r = { hire_fee: hireNow, green_total: greenSum, emailing: 0, offline: true };
+      }
       const cn = W.assets.find(a => a.id === W.cart)?.name, kn = W.assets.find(a => a.id === W.clubs)?.name;
       const extra = W.items.map(id => W.assets.find(a => a.id === id)?.name).filter(Boolean).join(', ');
       view(`<div class="card done"><div class="tick">✓</div><h2>Checked in</h2><p style="font-size:24px;margin:0"><b>${esc(W.golfers[0].first_name)} ${esc(W.golfers[0].last_name)}</b></p>
-        <div class="cartno">${cn ? '🛺 ' + esc(cn) : 'Walking'}</div><p style="font-size:20px;margin:0">${kn ? '🏌 ' + esc(kn) : 'Own clubs'}</p>${extra ? `<p style="font-size:18px;margin:6px 0 0">${esc(extra)}</p>` : ''}${W.bags ? `<p class="mut" style="margin:6px 0 0">Bag ${esc(W.bags)}</p>` : ''}<p class="mut">${W.fee === 'member' ? 'Verified member: no green fee. ' : ''}Hire total: ${money(r.hire_fee)}</p>${r.emailing ? '<p class="mut">📧 A copy of the signed agreement is being emailed.</p>' : ''}</div><div class="bar"><button class="p" id="h">Done</button></div>`);
+        <div class="cartno">${cn ? '🛺 ' + esc(cn) : 'Walking'}</div><p style="font-size:20px;margin:0">${kn ? '🏌 ' + esc(kn) : 'Own clubs'}</p>${extra ? `<p style="font-size:18px;margin:6px 0 0">${esc(extra)}</p>` : ''}${W.bags ? `<p class="mut" style="margin:6px 0 0">Bag ${esc(W.bags)}</p>` : ''}<p class="mut">${W.fee === 'member' ? 'Verified member: nothing to pay. ' : ''}${+r.green_total > 0 ? `Green fees ${money(r.green_total)} · ` : ''}Hire ${money(r.hire_fee)}</p>${+r.green_total + +r.hire_fee > 0 ? `<p style="font-size:22px;margin:4px 0"><b>Total to pay ${money(+r.green_total + +r.hire_fee)}</b></p>` : ''}${r.emailing ? '<p class="mut">📧 A copy of the signed agreement is being emailed.</p>' : ''}${r.offline ? '<div class="alert" style="text-align:left;margin-top:12px">📶 <b>Saved on this tablet.</b> There is no connection right now, so this check-in will be sent automatically when it returns. The amounts shown are from the rate card on this tablet. Please keep the tablet switched on and in the app.</div>' : ''}</div><div class="bar"><button class="p" id="h">Done</button></div>`);
       $('#h').onclick = home;
     } catch (e) { $('#done').disabled = false; throw e; }
   });
@@ -354,31 +455,71 @@ async function assetStep() {
 /* ---------------- returns ---------------- */
 async function returns() {
   const load = async () => {
-    const { checkins } = await api('checkins/active');
-    $('#list').innerHTML = checkins.length ? `<table><tr><th>Guest</th><th>Cart</th><th>Clubs</th><th>Out</th></tr>${checkins.map(c => `<tr class="click" data-id="${c.id}"><td><b>${esc(c.guest)}</b>${c.golfers > 1 ? ` +${c.golfers - 1}` : ''}<div class="mut">${esc(c.hotel || '')} ${esc(c.room || '')}</div></td><td>${esc(c.cart_name) || '—'}</td><td>${hireCell(c)}</td><td>${hm(c.checked_in_at)}</td></tr>`).join('')}</table>` : '<p class="mut">Nothing is out right now.</p>';
+    let checkins, off = false;
+    try { ({ checkins } = await api('checkins/active', { quiet: true })); cacheSet('active', checkins); }
+    catch (e) { if (!isOffline(e)) throw e; checkins = cacheGet('active') || []; off = true; } // no signal: the list as it was last seen
+    $('#list').innerHTML = (off ? '<div class="alert">📶 No connection. This is the list from when the tablet last had a signal. Returns you record now are saved here and sent when it reconnects.</div>' : '') + (checkins.length ?`<table><tr><th>Guest</th><th>Cart</th><th>Clubs</th><th>Out</th></tr>${checkins.map(c => `<tr class="click" data-id="${c.id}"><td><b>${esc(c.guest)}</b>${c.golfers > 1 ? ` +${c.golfers - 1}` : ''}<div class="mut">${esc(c.hotel || '')} ${esc(c.room || '')}</div></td><td>${esc(c.cart_name) || '—'}</td><td>${hireCell(c)}</td><td>${hm(c.checked_in_at)}</td></tr>`).join('')}</table>` : '<p class="mut">Nothing is out right now.</p>');
     document.querySelectorAll('#list tr.click').forEach(tr => tr.onclick = () => returnDialog(checkins.find(c => c.id == tr.dataset.id)));
   };
   view('<div class="card"><h2>Tap an item to return it</h2><div id="list"></div></div>', 'Returns', home);
   await load(); setTimer(load);
 }
+/** Send a return now, or (no connection) keep it on the tablet to send later. Returns true when it was kept for later. */
+async function sendReturn(c, body) {
+  try { await api('checkins/return', { method: 'POST', body }); return false; }
+  catch (e) {
+    if (!isOffline(e)) throw e;
+    queueAdd('checkins/return', body, `Return: ${c.guest}`);
+    cacheSet('active', (cacheGet('active') || []).filter(x => x.id !== c.id)); // it no longer shows as out
+    return true;
+  }
+}
+
+/** A small photo taker: thumbnails plus an "Add photo" button (the camera on a tablet). get() returns the shots as [{kind, data}]. */
+function photoPicker(host, kind, max = 3) {
+  const shots = [];
+  host.innerHTML = '<div class="shots"></div><label class="upl">📷 Add photo<input type="file" accept="image/*" capture="environment" hidden></label>';
+  const row = host.querySelector('.shots'), inp = host.querySelector('input'), lab = host.querySelector('label');
+  const draw = () => { row.innerHTML = shots.map((s, i) => `<span class="shot"><img src="${s}" alt="Photo ${i + 1}"><button type="button" data-i="${i}" aria-label="Remove photo">×</button></span>`).join(''); lab.style.display = shots.length >= max ? 'none' : ''; };
+  inp.onchange = guard(async () => { const f = inp.files[0]; inp.value = ''; if (!f || shots.length >= max) return; shots.push(await shrink(f)); draw(); });
+  row.onclick = e => { const b = e.target.closest('button[data-i]'); if (b) { shots.splice(+b.dataset.i, 1); draw(); } };
+  return { get: () => shots.map(data => ({ kind, data })) };
+}
+
 function returnDialog(c) {
   const m = document.createElement('div'); m.className = 'modal';
   m.innerHTML = `<div><h2>Return: ${esc(c.guest)}</h2><p>${esc(c.cart_name || 'No cart')} · ${esc(c.clubs_name || 'No clubs')}</p>${c.items ? `<p>${esc(c.items)}</p>` : ''}${c.bags ? `<p class="mut">Bag ${esc(c.bags)}</p>` : ''}
+    ${c.clubs_name ? `<div class="clubcheck"><h3>Golf set check · ${esc(c.clubs_name)}</h3>
+      <label class="chk"><input type="radio" name="cc" value="ok"> All clubs are here, bag in good order</label>
+      <label class="chk"><input type="radio" name="cc" value="missing"> Something is missing or not right</label>
+      <div id="ccm" style="display:none"><input id="ccmt" maxlength="255" placeholder="What's missing? e.g. 7 iron, driver headcover, towel"><div id="ccph" style="margin:6px 0"></div><label class="chk"><input type="checkbox" id="ccos"> Take this set out of service until it's sorted</label></div></div>` : ''}
     <label for="rn">Notes <span style="text-transform:none;letter-spacing:0;font-weight:400">(optional)</span></label><textarea id="rn" rows="2" maxlength="500" placeholder="e.g. left early, low battery, lost a towel…"></textarea>
     <button class="p" id="ok">✔ Returned – undamaged</button><button class="d" id="dm">⚠ Damaged</button><button class="d" id="wr">🚫 Raise patron warning</button><button id="cx">Cancel</button></div>`;
   document.body.append(m);
+  const clubShots = c.clubs_name ? photoPicker($('#ccph', m), 'clubs', 3) : null; // photos of what is missing or damaged in the set
+  document.querySelectorAll('input[name=cc]', m).forEach(r => r.onchange = () => { $('#ccm', m).style.display = document.querySelector('input[name=cc]:checked', m).value === 'missing' ? '' : 'none'; if ($('#ccm', m).style.display === '') $('#ccmt', m).focus(); });
+  /** The golf set must be checked before anything is returned: all there, or exactly what is missing. */
+  const clubsPart = () => {
+    if (!c.clubs_name) return {};
+    const pick = document.querySelector('input[name=cc]:checked', m);
+    if (!pick) throw new Error('Check the golf set first: all clubs here, or what is missing');
+    if (pick.value === 'ok') return { clubs_check: 'ok' };
+    const what = $('#ccmt', m).value.trim(); if (!what) throw new Error('Say what is missing from the golf set');
+    return { clubs_check: 'missing', clubs_missing: what, clubs_out_of_service: $('#ccos', m).checked, photos: clubShots.get() };
+  };
   $('#cx', m).onclick = () => m.remove();
-  $('#ok', m).onclick = guard(async () => { await api('checkins/return', { method: 'POST', body: { id: c.id, condition: 'ok', note: $('#rn', m).value } }); m.remove(); toast('Returned'); returns(); });
+  $('#ok', m).onclick = guard(async () => { const cp = clubsPart(); const later = await sendReturn(c, { id: c.id, condition: 'ok', note: $('#rn', m).value, ...cp }); m.remove(); toast(later ? 'Saved on this tablet: will send when the connection returns' : cp.clubs_check === 'missing' ? 'Returned. Missing items recorded.' : 'Returned'); returns(); });
   const issue = (cond, title) => {
+    let cp; try { cp = clubsPart(); } catch (e) { return toast(e.message, true); }
     const typed = $('#rn', m)?.value || ''; // anything already typed carries over
     m.firstElementChild.innerHTML = `<h2>${title}</h2><label>What happened? *</label><textarea id="nt" rows="3">${esc(typed)}</textarea>
-      ${cond === 'damaged' ? '<label>Photo of damage</label><input id="ph" type="file" accept="image/*" capture="environment">' : ''}
+      ${cond === 'damaged' ? '<label>Photos of the damage</label><div id="dph"></div>' : ''}
       <button class="d" id="sv">Save</button><button id="cx2">Cancel</button>`;
+    const dmgShots = cond === 'damaged' ? photoPicker($('#dph', m), 'damage', 4) : null;
     $('#cx2', m).onclick = () => m.remove();
     $('#sv', m).onclick = guard(async () => {
-      const f = $('#ph', m)?.files[0];
-      await api('checkins/return', { method: 'POST', body: { id: c.id, condition: cond, note: $('#nt', m).value, photo: f ? await shrink(f) : '' } });
-      m.remove(); toast('Saved. ' + (cond === 'damaged' ? 'Marked for maintenance.' : 'Warning added to guest.')); returns();
+      const later = await sendReturn(c, { id: c.id, condition: cond, note: $('#nt', m).value, ...cp, photos: [...(cp.photos || []), ...(dmgShots ? dmgShots.get() : [])] });
+      m.remove(); toast(later ? 'Saved on this tablet: will send when the connection returns' : 'Saved. ' + (cond === 'damaged' ? 'Marked for maintenance.' : 'Warning added to guest.')); returns();
     });
   };
   $('#dm', m).onclick = () => issue('damaged', 'Damage report'); $('#wr', m).onclick = () => issue('warning', 'Patron warning');
@@ -395,20 +536,27 @@ function shrink(file, max = 900) {
 /* ---------------- history / today ---------------- */
 async function history(date) {
   const { checkins } = await api('checkins/list', { params: { date } });
-  const tot = checkins.reduce((s, c) => s + +c.hire_fee, 0);
+  const tot = checkins.reduce((s, c) => s + +c.hire_fee + +c.green_total, 0);
   view(`<div class="card"><h2>Check-ins</h2>${can('history') ? `<input type="date" id="d" value="${date}" style="max-width:220px">` : '<p class="mut">Today</p>'}
-   ${checkins.length ? `<table><tr><th>Time</th><th>Guest</th><th>Cart</th><th>Clubs</th><th>Hire</th><th></th></tr>${checkins.map(c => `<tr class="${can('history') ? 'click' : ''}" data-id="${c.id}"><td>${hm(c.checked_in_at)}</td><td><b>${esc(c.guest)}</b>${c.golfers > 1 ? ' +' + (c.golfers - 1) : ''}${c.fee_status === 'member' ? ' <span class="tag">Member</span>' : ''}<div class="mut">${esc(c.mobile)} ${esc(c.hotel || '')}</div></td><td>${esc(c.cart_name) || '—'}</td><td>${hireCell(c)}</td><td>${money(c.hire_fee)}</td>
-   <td><span class="tag ${c.returned_at ? (c.return_condition === 'ok' ? '' : 'r') : 'o'}">${c.returned_at ? (c.return_condition === 'ok' ? 'Back ' + hm(c.returned_at) : c.return_condition) : 'Out'}</span>${c.return_note ? `<div class="mut" style="max-width:220px">📝 ${esc(c.return_note)}</div>` : ''}</td></tr>`).join('')}</table><h3>Hire total: ${money(tot)}</h3>` : '<p class="mut">No check-ins.</p>'}</div>`, 'Check-ins', home);
+   ${checkins.length ? `<table><tr><th>Time</th><th>Guest</th><th>Cart</th><th>Clubs</th><th>Total</th><th></th></tr>${checkins.map(c => `<tr class="${can('history') ? 'click' : ''}" data-id="${c.id}"><td>${hm(c.checked_in_at)}</td><td><b>${esc(c.guest)}</b>${c.golfers > 1 ? ' +' + (c.golfers - 1) : ''}${c.fee_status === 'member' ? ' <span class="tag">Member</span>' : ''}<div class="mut">${esc(c.mobile)} ${esc(c.hotel || '')}</div></td><td>${esc(c.cart_name) || '—'}</td><td>${hireCell(c)}</td><td>${money(+c.hire_fee + +c.green_total)}</td>
+   <td><span class="tag ${c.returned_at ? (c.return_condition === 'ok' ? '' : 'r') : 'o'}">${c.returned_at ? (c.return_condition === 'ok' ? 'Back ' + hm(c.returned_at) : c.return_condition) : 'Out'}</span>${c.clubs_missing ? `<div style="max-width:220px;color:var(--warn);font-size:13px;font-weight:600">⚠ Set missing: ${esc(c.clubs_missing)}</div>` : ''}${c.return_note ? `<div class="mut" style="max-width:220px">📝 ${esc(c.return_note)}</div>` : ''}</td></tr>`).join('')}</table><h3>Total for the day: ${money(tot)}</h3>` : '<p class="mut">No check-ins.</p>'}</div>`, 'Check-ins', home);
   if (can('history')) { $('#d').onchange = e => history(e.target.value); document.querySelectorAll('tr.click').forEach(tr => tr.onclick = () => detail(tr.dataset.id, () => history(date))); }
 }
 const detail = guard(async (id, back) => {
   const c = await api('checkins/get', { params: { id } });
   view(`<div class="card"><h2>Check-in #${c.id}</h2><p>${fmtDT(c.checked_in_at)} · ${c.holes} holes · ${esc(c.cart_name || 'walking')} · ${esc(c.clubs_name || 'own clubs')}${c.items.length ? ' · ' + c.items.map(i => esc(i.name)).join(', ') : ''}${c.bags ? ' · bag ' + esc(c.bags) : ''} · ${money(c.hire_fee)} (${esc(c.fee_status)})<br><span class="mut">Checked in by ${esc(c.staff_name)} · terms v${c.terms_version}</span></p>
-   ${c.returned_at ? `<p>Returned ${fmtDT(c.returned_at)} – <b>${esc(c.return_condition)}</b> ${esc(c.return_note || '')}</p>${c.return_photo ? `<img src="${c.return_photo}" style="max-width:100%;border-radius:8px">` : ''}` : '<p><span class="tag o">Still out</span></p>'}
+   ${c.returned_at ? `<div class="card" style="background:var(--bg)"><h3 style="margin-top:0">Return</h3>
+     <p>Returned ${fmtDT(c.returned_at)}${c.returned_by ? ' · checked by ' + esc(c.returned_by) : ''} · <span class="tag ${c.return_condition === 'ok' ? '' : 'r'}">${c.return_condition === 'ok' ? 'No damage reported' : esc(c.return_condition)}</span></p>
+     ${c.clubs_missing ? `<div class="alert bad">⚠ <b>Golf set${c.clubs_name ? ' ' + esc(c.clubs_name) : ''} returned with items missing:</b> ${esc(c.clubs_missing)}</div>` : (+c.clubs_checked ? '<p class="mut">✔ Golf set checked: complete</p>' : '')}
+     ${c.return_note ? `<p>📝 ${esc(c.return_note)}</p>` : ''}
+     ${(() => { const shots = [...(c.return_photo ? [{ kind: 'damage', photo: c.return_photo }] : []), ...(c.photos || [])]; return shots.length ? `<div class="gallery">${shots.map(p => `<figure><img src="${p.photo}" alt="Photo" data-zoom="1"><figcaption>${p.kind === 'clubs' ? 'Golf set' : 'Damage'}</figcaption></figure>`).join('')}</div><p class="mut">Tap a photo to enlarge.</p>` : ''; })()}</div>` : '<p><span class="tag o">Still out</span></p>'}
    <h3>Signed golfers</h3>${c.golfers.map(g => `<div class="card"><b>${esc(g.first_name)} ${esc(g.last_name)}</b> ${g.is_main == 1 ? '(main hirer)' : ''}${g.guest_type === 'member' ? ` <span class="tag">Member${g.member_no ? ' #' + esc(g.member_no) : ''}</span>` : ''}<div class="mut">${esc(g.mobile)} ${esc(g.email || '')} · signed ${fmtDT(g.signed_at)}${g.guardian_name ? ' · guardian ' + esc(g.guardian_name) : ''}</div><img class="sigimg" src="${g.signature}">
      ${(c.emails || []).filter(m => m.golfer_id == g.golfer_id).map(m => `<div class="mut">📧 ${m.status === 'sent' ? 'Emailed to' : 'Email to'} ${esc(m.to_email)}${m.status === 'sent' ? '' : ' <b style="color:var(--warn)">failed</b>'} · ${fmtDT(m.sent_at)}</div>`).join('')}
      ${can('history') ? `<p class="noprint" style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 0"><a class="linkbtn" href="${API}?r=checkins/pdf&id=${g.golfer_id}&course=${CID}" target="_blank" rel="noopener">⬇ PDF copy</a><button type="button" class="mailcopy" data-g="${g.golfer_id}" data-e="${esc(g.email || '')}">📧 Email a copy</button></p>` : ''}</div>`).join('')}
    <h3>Terms accepted</h3><div class="terms">${esc(c.terms)}</div><p><button onclick="print()">Print</button></p></div>`, 'Check-in', back);
+  document.querySelectorAll('img[data-zoom]').forEach(im => im.onclick = () => { // tap a photo to see it full size
+    const lb = document.createElement('div'); lb.className = 'lightbox'; lb.innerHTML = `<img src="${im.src}" alt="Photo">`; lb.onclick = () => lb.remove(); document.body.append(lb);
+  });
   document.querySelectorAll('.mailcopy').forEach(b => b.onclick = guard(async () => {
     const to = prompt('Email a PDF copy of the signed agreement to:', b.dataset.e || ''); if (!to) return;
     await api('checkins/email', { method: 'POST', body: { id: +b.dataset.g, to: to.trim() } }); toast('Copy emailed to ' + to.trim()); detail(id, back);
@@ -430,7 +578,7 @@ const FL = { available: 'Available', out: 'Out on course', maintenance: 'Mainten
 async function overviewHtml() {
   const { courses } = await api('dashboard/overview');
   const sum = f => courses.reduce((s, c) => s + +f(c), 0);
-  return `<div class="stats">${stat(sum(c => c.today.rounds), 'Check-ins today', 'all courses')}${stat(sum(c => c.today.out_now), 'On course now')}${stat(money0(sum(c => c.today.fees)), 'Hire revenue today')}${stat(money0(sum(c => c.week.fees)), 'Hire revenue, 7 days', sum(c => c.week.rounds) + ' check-ins')}</div>
+  return `<div class="stats">${stat(sum(c => c.today.rounds), 'Check-ins today', 'all courses')}${stat(sum(c => c.today.out_now), 'On course now')}${stat(money0(sum(c => c.today.fees)), 'Takings today')}${stat(money0(sum(c => c.week.fees)), 'Takings, 7 days', sum(c => c.week.rounds) + ' check-ins')}</div>
    <div class="cgrid">${courses.map(c => {
     const byDay = Object.fromEntries(c.days.map(x => [x.d, +x.n])), smx = Math.max(1, ...c.days.map(x => +x.n));
     return `<div class="card course">
@@ -505,7 +653,7 @@ async function courseHtml() {
   const legend = list => Object.keys(FL).map(s => [s, list.filter(a => a.status === s).length]).filter(([, n]) => n).map(([s, n]) => `<span class="lg"><i class="fl ${s}"></i>${FL[s]} ${n}</span>`).join('');
   return `${cartPool(d)}<div class="seg" role="group">${[[1, 'Today'], [7, '7 days'], [30, '30 days']].map(([v, l]) => `<button class="${r === v ? 'on' : ''}" data-range="${v}">${l}</button>`).join('')}<span class="mut">Updated ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · refreshes every 30s</span></div>
    <div class="stats">
-     ${stat(p.rounds, 'Check-ins', label)}${stat(p.golfers, 'Golfers', label)}${stat(money0(p.fees), 'Hire revenue', label)}
+     ${stat(p.rounds, 'Check-ins', label)}${stat(p.golfers, 'Golfers', label)}${stat(money0(p.fees), 'Takings', label)}${+p.green ? stat(money0(p.green), 'Green fees', 'part of the takings') : ''}
      ${stat(t.out_now, 'On course now', 'right now')}${stat(`${free}<span class="of"> / ${carts.length}</span>`, 'Carts available')}${stat(money0(p.unpaid), 'Still to collect', 'unpaid hire, ' + label.toLowerCase())}${stat(p.members, 'Member rounds', `of ${p.rounds} check-ins`)}${stat(p.issues, 'Damage / warnings', label)}
    </div>
    <div class="two">
@@ -525,7 +673,7 @@ async function courseHtml() {
      ${(d.countries || []).length ? d.countries.map(x => meter(esc(x.name), +x.n, +d.countries[0].n, x.n)).join('') : ''}
      <h3>Green fee</h3>${[['paid', 'Paid'], ['room', 'Charged to room'], ['member', 'Member: no green fee'], ['unpaid', 'Collect at end']].map(([k, l]) => meter(l, +fee[k]?.n || 0, p.rounds, `${+fee[k]?.n || 0} · ${money0(fee[k]?.amt)}`)).join('')}
      ${d.hotels.length ? `<h3>Top hotels</h3>${d.hotels.map(h => meter(esc(h.name), +h.n, +d.hotels[0].n, h.n)).join('')}` : ''}</div>
-    <div class="card"><h2>Recent damage &amp; warnings</h2>${d.issues.length ? d.issues.map(i => `<p><span class="tag ${i.return_condition === 'damaged' ? 'r' : 'o'}">${i.return_condition}</span> <b>${esc(i.guest)}</b> · ${fmtDT(i.checked_in_at)}<br><span class="mut">${esc(i.return_note || '')}</span></p>`).join('') : '<p class="mut">None 🎉</p>'}</div>
+    <div class="card"><h2>Recent damage &amp; warnings</h2>${d.issues.length ? d.issues.map(i => `<p class="issue" ${can('history') ? `data-ci="${i.id}" style="cursor:pointer"` : ''}><span class="tag ${i.return_condition === 'damaged' || i.clubs_missing ? 'r' : 'o'}">${i.clubs_missing && i.return_condition === 'ok' ? 'set missing items' : i.return_condition}</span> <b>${esc(i.guest)}</b> · ${fmtDT(i.checked_in_at)}<br>${i.clubs_missing ? `<span style="color:var(--warn)">Missing: ${esc(i.clubs_missing)}</span><br>` : ''}<span class="mut">${esc(i.return_note || '')}</span></p>`).join('') : '<p class="mut">None 🎉</p>'}</div>
    </div>
    <p style="display:flex;gap:10px;flex-wrap:wrap">${can('history') ? '<button data-go="hist">📋 Browse history &amp; signed waivers</button>' : ''}${can('export') ? '<button data-go="export">⬇ Export check-ins (CSV)</button>' : ''}</p>`;
 }
@@ -542,6 +690,7 @@ const dashboard = guard(async tab => {
   view(`${tabs}<div id="dash">${body}</div>`, 'Dashboard', home);
   document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => dashboard(b.dataset.t === 'all' ? 'all' : +b.dataset.t));
   $('#dash').onclick = e => {
+    const iss = e.target.closest('.issue[data-ci]'); if (iss) return detail(+iss.dataset.ci, () => dashboard(tab)); // open a damage / missing-items case, photos included
     const b = e.target.closest('[data-range],[data-go]'); if (!b) return;
     if (b.dataset.range) { DASH.range = +b.dataset.range; return dashboard(tab); }
     const go = b.dataset.go;
@@ -554,12 +703,12 @@ const dashboard = guard(async tab => {
 
 /* ---------------- settings ---------------- */
 function settings(tab) {
-  const TABS = [...(can('fleet') ? [['fleet', 'Carts & clubs']] : []), ...(can('members') ? [['members', 'Members']] : []), ...(isCourseAdmin() ? [['users', 'Team'], ['access', 'Access'], ['email', 'Email'], ['timing', 'Round times']] : []), ...(isAdmin() ? [['terms', 'Terms'], ['courses', 'Courses']] : []), ...(can('export') ? [['export', 'Export']] : [])];
+  const TABS = [...(can('fleet') ? [['fleet', 'Carts & clubs']] : []), ...(can('members') ? [['members', 'Members']] : []), ...(isCourseAdmin() ? [['users', 'Team'], ['access', 'Access'], ['activity', 'Activity'], ['alerts', 'Alerts & reports'], ['email', 'Email'], ['rates', 'Green fees'], ['timing', 'Round times']] : []), ...(isAdmin() ? [['terms', 'Terms'], ['courses', 'Courses']] : []), ...(can('export') ? [['export', 'Export']] : [])];
   if (!TABS.length) return toast('Nothing in Settings is open to you. Ask your admin.', true);
   if (!TABS.some(([k]) => k === tab)) tab = TABS[0][0];
   view(`<div class="tabs">${TABS.map(([k, l]) => `<button class="${tab === k ? 'on' : ''}" data-t="${k}">${l}</button>`).join('')}</div><div id="pane"></div>`, 'Settings', home);
   document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => settings(b.dataset.t));
-  guard(async () => ({ fleet, terms: termsPane, users: usersPane, access: accessPane, email: emailPane, timing: timingPane, courses: coursesPane, members: membersPane, export: exportPane })[tab]())();
+  guard(async () => ({ fleet, terms: termsPane, users: usersPane, access: accessPane, activity: activityPane, alerts: alertsPane, email: emailPane, rates: ratesPane, timing: timingPane, courses: coursesPane, members: membersPane, export: exportPane })[tab]())();
 }
 async function fleet() {
   const { assets } = await api('assets', { params: { all: 1 } });
@@ -661,7 +810,8 @@ const RPT = { type: 'playmix', preset: 'month', from: '', to: '', scope: 'curren
 const REPORTS = [
   ['playmix', 'Golfers: members, resort guests, 9 vs 18', 'How many members, resort guests, residents and other visitors played, 9 or 18 holes, and how many paid'],
   ['memberyear', 'Member usage over the year', 'Rounds each member played in their membership year (renewal talks, low-use members)'],
-  ['cashup', 'Daily cash-up', 'Hire income and what is still to collect, by day and by staff member'],
+  ['revenue', 'Revenue: green fees & hire', 'Green fees by golfer type and 9 or 18 holes, hire, average per golfer'],
+  ['cashup', 'Daily cash-up', 'Green fees and hire due, what is paid, charged to room and still to collect, by day and staff member'],
   ['rounds', 'Rounds & peak times', 'Busiest days and hours, golfers per round, time out on the course'],
   ['fleet', 'Cart & equipment usage', 'How many times each cart and hire item was used, most to least, plus idle and damaged'],
   ['guests', 'Guest mix', 'Fiji residents and overseas, top countries and hotels, returning guests'],
@@ -708,8 +858,9 @@ const reportsScreen = guard(async (opts = {}) => {
    <div class="card" id="rout"><div class="rhead"><div><h2>${esc(d.title)}</h2><div class="mut">${esc(courseFull())} · ${trend ? 'last 12 months' : yearly ? 'each member\'s membership year' : `${fmtD(d.from)} to ${fmtD(d.to)}`}</div></div>
      <div class="noprint" style="display:flex;gap:8px;flex-wrap:wrap"><button id="rprint">🖨 Print</button><button id="rcsv">⬇ Save as CSV</button></div></div>
     ${d.summary.length ? `<div class="stats">${d.summary.map(([l, v, t]) => stat0(fmtCell(v, t), l)).join('')}</div>` : ''}
-    ${d.sections.map(s => `<h3>${esc(s.title)}</h3>${s.rows.length ? `<table><tr>${s.columns.map(c => `<th${['int', 'money', 'pct', 'mins'].includes(c[1]) ? ' style="text-align:right"' : ''}>${esc(c[0])}</th>`).join('')}</tr>${s.rows.map(r => `<tr${r[0] === 'Total' ? ' style="font-weight:700"' : ''}>${r.map((v, i) => `<td${['int', 'money', 'pct', 'mins'].includes(s.columns[i][1]) ? ' style="text-align:right"' : ''}>${fmtCell(v, s.columns[i][1])}</td>`).join('')}</tr>`).join('')}</table>` : '<p class="mut">Nothing in this period.</p>'}`).join('')}
+    ${d.sections.map(s => `<h3>${esc(s.title)}</h3>${s.rows.length ? `<table><tr>${s.columns.map(c => `<th${['int', 'money', 'pct', 'mins'].includes(c[1]) ? ' style="text-align:right"' : ''}>${esc(c[0])}</th>`).join('')}</tr>${s.rows.map((r, ri) => `<tr${r[0] === 'Total' ? ' style="font-weight:700"' : ''}${s.ids && can('history') ? ` class="click" data-ci="${s.ids[ri]}"` : ''}>${r.map((v, i) => `<td${['int', 'money', 'pct', 'mins'].includes(s.columns[i][1]) ? ' style="text-align:right"' : ''}>${fmtCell(v, s.columns[i][1])}</td>`).join('')}</tr>`).join('')}</table>${s.ids && can('history') && s.rows.length ? '<p class="mut noprint" style="font-size:13px">Tap a row to open the check-in and see its details and photos.</p>' : ''}` : '<p class="mut">Nothing in this period.</p>'}`).join('')}
     <p class="mut noprint" style="margin-top:18px">Figures come from check-ins recorded on the tablets. Hire income is the hire fees recorded at check-in (green-fee rates are not yet part of the system).</p></div>`, 'Reports', home);
+  document.querySelectorAll('#rout tr[data-ci]').forEach(tr => tr.onclick = () => detail(+tr.dataset.ci, () => reportsScreen())); // open the check-in behind a row, photos and all
   document.querySelectorAll('.rcard').forEach(b => b.onclick = () => reportsScreen({ type: b.dataset.r }));
   document.querySelectorAll('[data-p]').forEach(b => b.onclick = () => { const [f, t] = presetRange(b.dataset.p); reportsScreen({ preset: b.dataset.p, from: f, to: t }); });
   document.querySelectorAll('[data-s]').forEach(b => b.onclick = () => reportsScreen({ scope: b.dataset.s }));
@@ -837,6 +988,89 @@ async function emailPane() {
     await api('course/promo', { method: 'POST', body: { promo: url } }); toast('Banner saved'); emailPane();
   });
   if ($('#prm')) $('#prm').onclick = guard(async () => { await api('course/promo', { method: 'POST', body: { promo: '' } }); toast('Banner removed'); emailPane(); });
+}
+
+/** The course's green-fee rate card: one amount per round length and golfer type. The server prices every check-in from this; staff cannot change an amount. */
+async function ratesPane() {
+  const { rates } = await api('rates/get');
+  const CATS = [['member', 'Members'], ['resort', 'Resort / hotel guests'], ['resident', 'Fiji residents'], ['visitor', 'Other visitors']];
+  $('#pane').innerHTML = `<div class="card"><h2>Green fees · ${esc(courseName())}</h2>
+    <p class="mut">What each type of golfer pays for a round, in ${CUR}. At check-in the fee is worked out automatically: a <b>verified member</b> pays the member rate, a golfer <b>staying at a hotel or resort</b> the resort rate, a <b>Fiji resident</b> the resident rate, and anyone else the visitor rate. Leave everything at 0 to charge no green fees. Staff cannot change an amount at check-in.</p>
+    <table><tr><th></th>${CATS.map(([, l]) => `<th style="text-align:right">${l}</th>`).join('')}</tr>${[18, 9].map(h => `<tr><td><b>${h} holes</b></td>${CATS.map(([k]) => `<td><input class="rt" data-h="${h}" data-c="${k}" type="number" inputmode="decimal" min="0" step="0.5" value="${rates[h]?.[k] ?? 0}" style="text-align:right;min-width:110px"></td>`).join('')}</tr>`).join('')}</table>
+    <p class="mut">Cart use is included with the round and is never charged separately. Club, shoe and tennis hire fees are set under Carts &amp; clubs.</p>
+    <p><button class="p" id="rsave">Save green fees</button></p></div>`;
+  $('#rsave').onclick = guard(async () => {
+    const out = { 9: {}, 18: {} };
+    document.querySelectorAll('input.rt').forEach(i => { out[i.dataset.h][i.dataset.c] = i.value === '' ? 0 : +i.value; });
+    await api('rates/save', { method: 'POST', body: { rates: out } });
+    toast('Green fees saved');
+  });
+}
+
+/* ---------------- activity log (admins) ---------------- */
+const ACTION_LABEL = {
+  login: 'Signed in', login_failed: 'Failed sign-in', checkin: 'Checked guests in', return: 'Returned cart / clubs',
+  user_save: 'Saved a team member', access_save: 'Changed access settings', asset_save: 'Edited a cart / hire item', asset_bulk: 'Added carts / hire items', asset_maintenance: 'Cart / item maintenance change',
+  terms_save: 'Changed the terms', course_save: 'Changed a course', course_timing: 'Changed round times', rates_save: 'Changed green fees', promo_set: 'Changed the PDF banner',
+  members_import: 'Uploaded member list', member_save: 'Saved a member', member_delete: 'Deleted a member', export: 'Exported data',
+  email_settings: 'Changed email settings', email_test: 'Sent a test email', pdf_view: 'Opened a signed copy', pdf_email: 'Emailed a signed copy', guest_alert: 'Changed a guest warning',
+  report_sent: 'Scheduled report emailed', overdue_alert: 'Overdue-cart alert sent', schedule_save: 'Changed scheduled reports', alert_save: 'Changed overdue alerts',
+};
+const AP = { from: '', to: '', user: '', q: '' };
+
+async function activityPane() {
+  const d = await api('audit/list', { params: { from: AP.from, to: AP.to, user: AP.user, q: AP.q } });
+  AP.from = d.from; AP.to = d.to;
+  const when = s => new Date(s.replace(' ', 'T')).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  const label = a => ACTION_LABEL[a] || a.replace(/_/g, ' ');
+  $('#pane').innerHTML = `<div class="card"><h2>Activity log${d.head_office ? '' : ' · ' + esc(courseName())}</h2>
+    <p class="mut">A record of what people did in the system: who, what and when. Newest first, up to 400 entries.${d.head_office ? ' As head office you see everyone.' : ' You see your own team.'}</p>
+    <div class="row"><div><label for="af">From</label><input id="af" type="date" value="${d.from}"></div><div><label for="at">To</label><input id="at" type="date" value="${d.to}"></div></div>
+    <div class="row"><div><label for="au">Person</label><select id="au"><option value="">Everyone</option>${d.people.map(p => `<option value="${p.id}" ${AP.user == p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div><div><label for="aq">Search</label><input id="aq" type="search" value="${esc(AP.q)}" placeholder="e.g. export, member, email"></div></div>
+    <p style="display:flex;gap:10px;flex-wrap:wrap"><button class="p" id="ago">Show</button><button id="acsv">⬇ Save as CSV</button></p>
+    ${d.rows.length ? `<table><tr><th>When</th><th>Who</th><th>What</th><th>Details</th>${d.head_office ? '<th>Course</th>' : ''}<th>From</th></tr>${d.rows.map(r => `<tr><td style="white-space:nowrap">${when(r.at)}</td><td>${esc(r.name || r.username || '—')}${r.role ? `<div class="mut">${esc(r.role)}</div>` : ''}</td><td${r.action === 'login_failed' ? ' style="color:var(--warn);font-weight:600"' : ''}>${esc(label(r.action))}</td><td class="mut">${esc(r.detail || '')}</td>${d.head_office ? `<td>${esc(r.course || '—')}</td>` : ''}<td class="mut">${esc(r.ip || '')}</td></tr>`).join('')}</table>` : '<p class="mut">Nothing recorded for this period.</p>'}</div>`;
+  const apply = () => { AP.from = $('#af').value; AP.to = $('#at').value; AP.user = $('#au').value; AP.q = $('#aq').value.trim(); activityPane(); };
+  $('#ago').onclick = apply; $('#aq').onkeydown = e => { if (e.key === 'Enter') apply(); };
+  $('#acsv').onclick = () => {
+    const q = v => { const s = String(v ?? ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    const lines = [['When', 'Who', 'Role', 'What', 'Details', 'Course', 'IP'], ...d.rows.map(r => [r.at, r.name || r.username, r.role, label(r.action), r.detail, r.course, r.ip])];
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['﻿' + lines.map(r => r.map(q).join(',')).join('\r\n')], { type: 'text/csv' })); a.download = `activity-${d.from}-to-${d.to}.csv`; a.click();
+  };
+}
+
+/* ---------------- overdue alerts and scheduled report emails ---------------- */
+async function alertsPane() {
+  const [a, sc] = await Promise.all([api('alert/get'), api('schedule/list')]);
+  const al = a.alert, t = a.timing;
+  const typeOpt = v => Object.entries(sc.types).map(([k, l]) => `<option value="${k}" ${k === v ? 'selected' : ''}>${esc(l)}</option>`).join('');
+  const row = s => `<tr data-id="${s.id}"><td>${esc(sc.types[s.report_type] || s.report_type)}</td><td>${s.frequency === 'weekly' ? 'Every Monday (last week)' : 'On the 1st (last month)'}</td>
+    <td><input class="sr" value="${esc(s.recipients)}" style="min-width:220px"></td><td class="mut">${s.last_sent ? 'covers up to ' + fmtD(s.last_sent) : 'not sent yet'}</td>
+    <td style="white-space:nowrap"><label><input class="se" type="checkbox" ${+s.enabled ? 'checked' : ''}> On</label></td>
+    <td style="white-space:nowrap"><button class="ssv p" type="button">Save</button> <button class="ssn" type="button">Send now</button> <button class="sdl d" type="button">Remove</button></td></tr>`;
+  $('#pane').innerHTML = `<div class="card"><h2>Overdue cart alerts · ${esc(courseName())}</h2>
+    <p class="mut">When a cart is still out after the overdue time (currently <b>${dur(t.late9)}</b> for nine holes and <b>${dur(t.late18)}</b> for eighteen; change under Round times), an alert goes out <b>once per cart</b>. Alerts are checked every few minutes while the app is in use.</p>
+    <label class="chk"><input id="al_on" type="checkbox" ${+al.enabled ? 'checked' : ''}> Send overdue-cart alerts</label>
+    <label for="al_to">Email these people <span style="text-transform:none;letter-spacing:0;font-weight:400">(separate with commas)</span></label><input id="al_to" autocapitalize="none" value="${esc(al.recipients || '')}" placeholder="supervisor@yourclub.com, proshop@yourclub.com">
+    <label for="al_hook">Webhook for text messages or chat <span style="text-transform:none;letter-spacing:0;font-weight:400">(optional)</span></label><input id="al_hook" autocapitalize="none" value="${esc(al.webhook_url || '')}" placeholder="https://hooks.example.com/…">
+    <p class="mut">A webhook lets you send a text message or a Teams/Slack message: paste the address from a service such as Zapier, Make, Teams or Slack. It receives the alert as JSON with a ready-to-send <code>text</code> field.</p>
+    <p style="display:flex;gap:10px;flex-wrap:wrap"><button class="p" id="al_save">Save alert settings</button><button id="al_test">Send a test alert</button></p></div>
+
+   <div class="card"><h2>Scheduled report emails · ${esc(courseName())}</h2>
+    <p class="mut">Reports emailed automatically, with the full report attached as a CSV for Excel. <b>Weekly</b> reports go out on Monday morning for the week just finished (Monday to Sunday); <b>monthly</b> reports on the 1st for the month just finished. They go out from 6 am once someone opens the app that day.</p>
+    ${sc.schedules.length ? `<table><tr><th>Report</th><th>When</th><th>Sent to</th><th>Last sent</th><th></th><th></th></tr>${sc.schedules.map(row).join('')}</table>` : '<p class="mut">No scheduled reports yet.</p>'}
+    <h3>Add a scheduled report</h3>
+    <div class="row"><div><label for="ns_t">Report</label><select id="ns_t">${typeOpt('fleet')}</select></div><div><label for="ns_f">How often</label><select id="ns_f"><option value="weekly">Weekly (Monday, for last week)</option><option value="monthly">Monthly (the 1st, for last month)</option></select></div></div>
+    <label for="ns_r">Send to</label><input id="ns_r" autocapitalize="none" placeholder="manager@yourclub.com, owner@yourclub.com">
+    <p><button class="p" id="ns_add">Add scheduled report</button></p></div>`;
+  $('#al_save').onclick = guard(async () => { await api('alert/save', { method: 'POST', body: { enabled: $('#al_on').checked, recipients: $('#al_to').value, webhook_url: $('#al_hook').value } }); toast('Alert settings saved'); });
+  $('#al_test').onclick = guard(async () => { await api('alert/save', { method: 'POST', body: { enabled: $('#al_on').checked, recipients: $('#al_to').value, webhook_url: $('#al_hook').value } }); await api('alert/test', { method: 'POST', body: {} }); toast('Test alert sent'); });
+  $('#ns_add').onclick = guard(async () => { await api('schedule/save', { method: 'POST', body: { report_type: $('#ns_t').value, frequency: $('#ns_f').value, recipients: $('#ns_r').value, enabled: true } }); toast('Scheduled'); alertsPane(); });
+  document.querySelectorAll('tr[data-id]').forEach(tr => {
+    const s = sc.schedules.find(x => x.id == tr.dataset.id);
+    $('.ssv', tr).onclick = guard(async () => { await api('schedule/save', { method: 'POST', body: { report_type: s.report_type, frequency: s.frequency, recipients: $('.sr', tr).value, enabled: $('.se', tr).checked } }); toast('Saved'); alertsPane(); });
+    $('.ssn', tr).onclick = guard(async () => { if (!confirm('Email this report now (for last week / last month) to the people listed?')) return; await api('schedule/send', { method: 'POST', body: { id: s.id } }); toast('Report emailed'); });
+    $('.sdl', tr).onclick = guard(async () => { if (!confirm('Remove this scheduled report?')) return; await api('schedule/delete', { method: 'POST', body: { id: s.id } }); toast('Removed'); alertsPane(); });
+  });
 }
 
 /** Logo picked in the browser: scaled down and kept as PNG (so transparency survives), stored with the course. */

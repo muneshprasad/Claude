@@ -266,7 +266,7 @@ function mail_settings_for(int $course): array {
 
 /* ---------- building and sending ---------- */
 
-function build_mime(array $s, string $subject, string $text, string $html, string $fileName, string $pdf): array {
+function build_mime(array $s, string $subject, string $text, string $html, string $fileName, string $pdf, string $mime = 'application/pdf'): array {
     $clean = static fn($v) => trim(preg_replace('/[\r\n]+/', ' ', (string)$v));
     $b1 = '=_m' . bin2hex(random_bytes(8)); $b2 = '=_a' . bin2hex(random_bytes(8));
     $hdr = ['From: =?UTF-8?B?' . base64_encode($clean($s['from_name'])) . '?= <' . $clean($s['from']) . '>'];
@@ -275,7 +275,7 @@ function build_mime(array $s, string $subject, string $text, string $html, strin
     $hdr[] = "Content-Type: multipart/mixed; boundary=\"$b1\"";
     $part = static fn($type, $body) => "Content-Type: $type; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n" . chunk_split(base64_encode($body));
     $body = "--$b1\r\nContent-Type: multipart/alternative; boundary=\"$b2\"\r\n\r\n--$b2\r\n" . $part('text/plain', $text) . "--$b2\r\n" . $part('text/html', $html) . "--$b2--\r\n";
-    if ($pdf !== '') $body .= "--$b1\r\nContent-Type: application/pdf; name=\"$fileName\"\r\nContent-Transfer-Encoding: base64\r\nContent-Disposition: attachment; filename=\"$fileName\"\r\n\r\n" . chunk_split(base64_encode($pdf));
+    if ($pdf !== '') $body .= "--$b1\r\nContent-Type: $mime; name=\"$fileName\"\r\nContent-Transfer-Encoding: base64\r\nContent-Disposition: attachment; filename=\"$fileName\"\r\n\r\n" . chunk_split(base64_encode($pdf));
     return [$hdr, $body . "--$b1--\r\n", '=?UTF-8?B?' . base64_encode($subject) . '?='];
 }
 
@@ -314,8 +314,8 @@ function smtp_send(array $c, string $from, string $to, string $data): array {
 }
 
 /** @return array{0:bool,1:string} */
-function mail_send(string $to, string $subject, string $text, string $html, string $fileName, string $pdf, array $s): array {
-    [$hdr, $body, $subjEnc] = build_mime($s, $subject, $text, $html, $fileName, $pdf);
+function mail_send(string $to, string $subject, string $text, string $html, string $fileName, string $pdf, array $s, string $mime = 'application/pdf'): array {
+    [$hdr, $body, $subjEnc] = build_mime($s, $subject, $text, $html, $fileName, $pdf, $mime);
     if ($s['method'] === 'smtp') {
         $dom = preg_replace('/^.*@/', '', $s['from']) ?: 'localhost';
         $head = implode("\r\n", $hdr) . "\r\nTo: $to\r\nSubject: $subjEnc\r\nDate: " . date('r') . "\r\nMessage-ID: <" . bin2hex(random_bytes(8)) . "@$dom>";

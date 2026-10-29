@@ -80,6 +80,8 @@ CREATE TABLE IF NOT EXISTS checkins (
   cart_id INT NULL,
   clubs_id INT NULL,
   hire_fee DECIMAL(8,2) NOT NULL DEFAULT 0,
+  green_total DECIMAL(8,2) NOT NULL DEFAULT 0,   -- green fees for the whole group, from the rate card
+  client_ref VARCHAR(40) NULL,            -- made up by the tablet so an offline check-in sent twice is recorded once
   notes VARCHAR(500) NULL,
   bags VARCHAR(40) NULL,                  -- bag number(s), e.g. "12, 14"
   terms_version INT NOT NULL,
@@ -89,10 +91,13 @@ CREATE TABLE IF NOT EXISTS checkins (
   return_staff_id INT NULL,
   return_condition ENUM('ok','damaged','warning') NULL,
   return_note VARCHAR(500) NULL,
+  clubs_missing VARCHAR(255) NULL,        -- what was missing from a returned golf set (NULL = complete)
+  clubs_checked TINYINT(1) NOT NULL DEFAULT 0,
   return_photo MEDIUMTEXT NULL,           -- data URL (jpeg, resized in browser)
   KEY idx_open (returned_at),
   KEY idx_date (checked_in_at),
   KEY idx_course_date (course_id, checked_in_at),
+  UNIQUE KEY uq_client_ref (client_ref),
   FOREIGN KEY (main_guest_id) REFERENCES guests(id),
   FOREIGN KEY (cart_id) REFERENCES assets(id),
   FOREIGN KEY (clubs_id) REFERENCES assets(id),
@@ -122,6 +127,8 @@ CREATE TABLE IF NOT EXISTS checkin_golfers (
   guest_type ENUM('guest','member') NOT NULL DEFAULT 'guest',   -- per check-in, so membership is per course
   member_id INT NULL,                     -- matched row in members, when found
   hotel VARCHAR(150) NULL,                -- as at check-in (guest record holds only the latest)
+  green_fee DECIMAL(8,2) NOT NULL DEFAULT 0,
+  rate_cat VARCHAR(20) NULL,              -- member | resort | resident | visitor
   country VARCHAR(80) NULL,
   FOREIGN KEY (checkin_id) REFERENCES checkins(id) ON DELETE CASCADE,
   FOREIGN KEY (guest_id) REFERENCES guests(id)
@@ -173,6 +180,58 @@ CREATE TABLE IF NOT EXISTS email_settings (
   smtp_user VARCHAR(150) NULL,
   smtp_pass TEXT NULL,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Green-fee rate card per course: one amount per (holes, golfer type).
+CREATE TABLE IF NOT EXISTS rates (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  course_id INT NOT NULL,
+  holes TINYINT NOT NULL,                              -- 9 or 18
+  category ENUM('member','resort','resident','visitor') NOT NULL,
+  amount DECIMAL(8,2) NOT NULL DEFAULT 0,
+  UNIQUE KEY uq_rate (course_id, holes, category)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Scheduled report emails (weekly / monthly), per course.
+CREATE TABLE IF NOT EXISTS report_schedules (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  course_id INT NOT NULL,
+  report_type VARCHAR(20) NOT NULL,                    -- e.g. fleet (cart usage), cashup, playmix
+  frequency ENUM('weekly','monthly') NOT NULL,
+  recipients TEXT NOT NULL,                            -- comma separated email addresses
+  enabled TINYINT(1) NOT NULL DEFAULT 1,
+  last_sent DATE NULL,
+  UNIQUE KEY uq_sched (course_id, report_type, frequency)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Overdue-cart alerts, per course (email, and an optional webhook for SMS/chat services).
+CREATE TABLE IF NOT EXISTS alert_settings (
+  course_id INT NOT NULL PRIMARY KEY,
+  enabled TINYINT(1) NOT NULL DEFAULT 0,
+  recipients TEXT NULL,                                -- comma separated email addresses
+  webhook_url VARCHAR(300) NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS alert_log (
+  checkin_id INT NOT NULL PRIMARY KEY,                 -- one alert per overdue check-in
+  sent_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Last-run stamps for the background jobs (these run when the app is in use, so no cron is required).
+CREATE TABLE IF NOT EXISTS app_state (
+  k VARCHAR(40) NOT NULL PRIMARY KEY,
+  v VARCHAR(100) NOT NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Photos taken at return (damage, or an incomplete golf set).
+CREATE TABLE IF NOT EXISTS return_photos (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  checkin_id INT NOT NULL,
+  kind ENUM('damage','clubs') NOT NULL,        -- cart/equipment damage, or a golf set returned damaged or incomplete
+  photo MEDIUMTEXT NOT NULL,                  -- JPEG data URL, resized on the tablet
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_checkin (checkin_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS terms (
