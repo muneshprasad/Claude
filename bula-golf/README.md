@@ -21,7 +21,8 @@ prototype.html the original single-file offline prototype
 
 ## Install on cPanel
 1. **MySQL Databases**: create a database + user, give the user *All Privileges*.
-2. **File Manager / FTP**: upload the *contents* of `public/` to `public_html/golf/` (or a subdomain folder). Upload `sql/` and `cron/`
+2. **Subdomain** (e.g. `bulagolf.fijionline.nz`): cPanel > Domains/Subdomains shows its *document root* (often `/home/USER/bulagolf.fijionline.nz`). Upload the *contents* of `public/` straight into that document root, so the app is at the root of the domain.
+   **File Manager / FTP**: upload the *contents* of `public/` to `public_html/golf/` (or a subdomain folder). Upload `sql/` and `cron/`
    one level above `public/` (same parent folder as `public`, ideally outside `public_html`; if you
    put `cron/` elsewhere, fix the `require` path at its top).
 3. Copy `api/config.sample.php` to `api/config.php`; enter the DB details and set `setup_key` to a long random string.

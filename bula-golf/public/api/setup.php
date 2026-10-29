@@ -7,10 +7,14 @@ $c = cfg();
 header('Content-Type: text/html; charset=utf-8');
 if (!hash_equals((string)$c['setup_key'], (string)($_GET['key'] ?? '')) || strlen((string)$c['setup_key']) < 16) { http_response_code(403); exit('Forbidden'); }
 
+function schema_path(): string {
+    foreach ([__DIR__ . '/schema.sql', __DIR__ . '/../../sql/schema.sql', __DIR__ . '/../sql/schema.sql', __DIR__ . '/../../../sql/schema.sql'] as $f) if (is_file($f)) return $f;
+    exit('schema.sql not found. Upload the sql folder next to your site folder (or put schema.sql inside api/), or import sql/schema.sql in phpMyAdmin.');
+}
 $pdo = db();
 $have = (int)$pdo->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='users'")->fetchColumn();
 if (!$have) {
-    foreach (array_filter(array_map('trim', explode(';', file_get_contents(__DIR__ . '/../../sql/schema.sql')))) as $stmt) {
+    foreach (array_filter(array_map('trim', explode(';', file_get_contents(schema_path())))) as $stmt) {
         if (preg_match('/^(--[^\n]*\n)*\s*$/', $stmt)) continue;
         $pdo->exec($stmt);
     }

@@ -16,7 +16,8 @@ declare(strict_types=1);
  * matched to carts by assets.gps_unit_id.
  */
 if (PHP_SAPI !== 'cli') { http_response_code(404); exit; }
-require __DIR__ . '/../public/api/lib.php';
+foreach ([__DIR__ . '/../public/api/lib.php', __DIR__ . '/api/lib.php', __DIR__ . '/../api/lib.php'] as $f) { if (is_file($f)) { require $f; break; } }
+if (!function_exists('cfg')) { fwrite(STDERR, "Cannot find api/lib.php - edit the path at the top of gps_sync.php\n"); exit(1); }
 $c = cfg();
 
 function fetch_simulated(): array {
