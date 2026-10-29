@@ -60,7 +60,20 @@ function start_session(): void {
     session_start();
 }
 
-function user(): ?array { start_session(); return $_SESSION['user'] ?? null; }
+/** Signed-in user: app clients send X-Bula-Token (custom header: cPanel/Apache can strip Authorization), browsers use the session cookie. */
+function user(): ?array {
+    $t = $_SERVER['HTTP_X_BULA_TOKEN'] ?? '';
+    if ($t !== '') {
+        if (!preg_match('/^[a-f0-9]{64}$/', $t)) return null;
+        $u = q("SELECT u.id, u.name, u.role FROM api_tokens t JOIN users u ON u.id=t.user_id
+                WHERE t.token_hash=? AND u.active=1 AND t.last_used > (NOW() - INTERVAL 30 DAY)", [hash('sha256', $t)])->fetch();
+        if (!$u) return null;
+        q('UPDATE api_tokens SET last_used=NOW() WHERE token_hash=?', [hash('sha256', $t)]);
+        return ['id' => (int)$u['id'], 'name' => $u['name'], 'role' => $u['role']];
+    }
+    start_session();
+    return $_SESSION['user'] ?? null;
+}
 
 function require_login(): array {
     $u = user();

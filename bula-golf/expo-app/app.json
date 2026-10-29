@@ -1,0 +1,39 @@
+{
+  "expo": {
+    "name": "Bula Golf Check-in",
+    "slug": "bula-golf-checkin",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "fj.bulagolf.checkin"
+    },
+    "android": {
+      "package": "fj.bulagolf.checkin",
+      "adaptiveIcon": {
+        "backgroundColor": "#1b6b3a",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "permissions": [
+        "CAMERA"
+      ],
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Bula Golf needs the camera to photograph damage to carts and clubs."
+        }
+      ]
+    ]
+  }
+}

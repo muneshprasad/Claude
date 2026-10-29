@@ -22,14 +22,23 @@ try {
             fail(401, 'Wrong username or password');
         }
         q('DELETE FROM login_attempts WHERE username=?', [$u]);
+        $me = ['id' => (int)$row['id'], 'name' => $row['name'], 'role' => $row['role']];
+        audit((int)$row['id'], 'login');
+        if (!empty($b['app'])) { // mobile app: issue a token instead of a cookie session
+            $tok = bin2hex(random_bytes(32));
+            q('DELETE FROM api_tokens WHERE last_used < (NOW() - INTERVAL 30 DAY)');
+            q('INSERT INTO api_tokens (token_hash, user_id) VALUES (?,?)', [hash('sha256', $tok), $me['id']]);
+            out(['user' => $me, 'token' => $tok]);
+        }
         start_session();
         session_regenerate_id(true);
-        $_SESSION['user'] = ['id' => (int)$row['id'], 'name' => $row['name'], 'role' => $row['role']];
-        audit((int)$row['id'], 'login');
-        out(['user' => $_SESSION['user']]);
+        $_SESSION['user'] = $me;
+        out(['user' => $me]);
     }
     case 'auth/logout':
-        start_session(); $_SESSION = []; session_destroy(); out(['ok' => true]);
+        if (!empty($_SERVER['HTTP_X_BULA_TOKEN'])) q('DELETE FROM api_tokens WHERE token_hash=?', [hash('sha256', $_SERVER['HTTP_X_BULA_TOKEN'])]);
+        else { start_session(); $_SESSION = []; session_destroy(); }
+        out(['ok' => true]);
     case 'auth/me': {
         $u = user();
         $c = cfg();

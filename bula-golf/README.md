@@ -14,7 +14,8 @@ public/        upload this folder's contents to e.g. public_html/golf/
   api/         PHP JSON API (index.php, lib.php, setup.php, config.sample.php)
 sql/schema.sql tables (setup.php runs this for you)
 cron/          gps_sync.php – cart GPS status sync (cPanel cron job)
-capacitor/     Android APK wrapper config
+capacitor/     Android APK wrapper config (simple option: wraps the web app)
+expo-app/      Expo / React Native tablet app (native option; see expo-app/README.md)
 prototype.html the original single-file offline prototype
 ```
 
@@ -34,8 +35,10 @@ prototype.html the original single-file offline prototype
 - Browser: open the URL → "Add to Home screen".
 - APK: see below.
 
-## Android APK
-Needs Node 18+ and Android Studio on any computer:
+## Android APK (two options)
+**Option A – Expo app (recommended):** see `expo-app/README.md` (`eas build -p android --profile apk`).
+
+**Option B – Capacitor wrapper of the web app.** Needs Node 18+ and Android Studio on any computer:
 ```
 cd capacitor
 # edit capacitor.config.json: server.url = your https URL
