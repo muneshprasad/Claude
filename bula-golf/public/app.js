@@ -226,7 +226,7 @@ async function rangeRefresh() {
   if (r.orders.some(o => !RANGE_SEEN.has(o.id))) beep();
   r.orders.forEach(o => RANGE_SEEN.add(o.id));
   el.innerHTML = r.orders.length
-    ? `<div class="rangealert"><h3 style="margin:0 0 8px">🎯 Range balls to issue <span class="mut">(${r.orders.length})</span></h3>${r.orders.map(o => `<div class="rorder"><div><b>${esc(o.guest_name || 'Guest')}</b><div class="mut">${+o.qty} × ${esc(o.product_name)} · paid · ${hm(o.created_at)}</div></div><button class="p" data-iss="${o.id}">✔ Issued</button></div>`).join('')}</div>`
+    ? `<div class="rangealert"><h3 style="margin:0 0 8px">🎯 Range balls to issue <span class="mut">(${r.orders.length})</span></h3>${r.orders.map(o => `<div class="rorder"><div><b>${esc(o.guest_name || 'Guest')}</b><div class="mut">${+o.qty} × ${esc(o.product_name)} · ${+o.free ? '<b>FREE – member</b>' : 'paid'} · ${hm(o.created_at)}</div></div><button class="p" data-iss="${o.id}">✔ Issued</button></div>`).join('')}</div>`
     : '<p class="mut">🎯 No range-ball orders waiting.</p>';
   el.querySelectorAll('[data-iss]').forEach(b => b.onclick = guard(async () => { b.disabled = true; await api('range/issue', { method: 'POST', body: { id: +b.dataset.iss } }); toast('Marked as issued'); rangeRefresh(); }));
 }
@@ -339,7 +339,7 @@ function golferForm(g = {}) {
     return {
       mobile: $('#mobile').value.trim(), member_no: $('#mno').value.trim(), first_name: $('#fn').value.trim(), last_name: $('#ln').value.trim(), email: $('#em').value.trim(), country: hideFields() ? '' : $('#orig').value === 'local' ? 'Fiji' : $('#co').value.trim(),
       hotel: hideFields() || $('#orig').value === 'local' ? '' : $('#ho').value.trim(), room: hideFields() || $('#orig').value === 'local' ? '' : $('#ro').value.trim(), dob: hideFields() ? '' : $('#dob').value, marketing_optin: $('#mk').checked, guardian_name: $('#gd')?.value.trim() || '',
-      card_checked: !!$('#mcard')?.checked, member_ok: !!(s.found && s.nameOk && !s.expired && $('#mcard')?.checked),
+      free_claimed: !!(s.found && +MEM.free_claimed), card_checked: !!$('#mcard')?.checked, member_ok: !!(s.found && s.nameOk && !s.expired && $('#mcard')?.checked),
     };
   };
   const under18 = () => { if (hideFields()) return false; const d = $('#dob').value; return d && (Date.now() - new Date(d)) / 31557600000 < 18; };
@@ -417,6 +417,7 @@ async function assetStep() {
   const feeA = id => { const a = W.assets.find(x => x.id === id); return a ? cfee(a) || 0 : 0; };
   const hireNow = feeA(W.clubs) + W.items.reduce((s, id) => s + feeA(id), 0);
   const rprods = W.rprods || [], rq = id => +W.range[id] || 0, rangeSum = rprods.reduce((t, p) => t + rq(p.id) * +p.price, 0);
+  const freeP = rprods.find(p => +p.member_free);
   const allMem = W.golfers.length > 0 && W.golfers.every(g => g.member_ok);
   const memberFree = allMem && greenSum + hireNow + rangeSum < 0.005; // nothing to pay
   if (W.fee !== 'room') W.fee = 'paid';
@@ -434,6 +435,7 @@ async function assetStep() {
     ${ft.shoes ? `<h3>Shoe hire <span class="mut">— tap to add, tap again to remove</span></h3><div class="grid">${multi(shoes)}</div>` : ''}
     ${ft.tennis ? `<h3>Tennis hire <span class="mut">— racquets and tennis shoes</span></h3><div class="grid">${multi(tennis)}</div>` : ''}
     ${rprods.length ? `<h3>Range balls <span class="mut">— paid now; the golf attendant is alerted to issue them</span></h3><div class="grid">${rprods.map(p => `<div class="tile ${rq(p.id) ? 'sel' : ''}" data-k="range" data-id="${p.id}">${esc(p.name)}<small>${money(p.price)}${rq(p.id) ? ` · <b>× ${rq(p.id)}</b> <button type="button" class="rm" data-rm="${p.id}" style="padding:2px 10px;min-height:0">−</button>` : ' · tap to add'}</small></div>`).join('')}</div>` : ''}
+    ${freeP ? W.golfers.filter(g => g.member_ok).map(g => `<div class="alert ${g.free_claimed ? '' : 'ok'}">🎁 <b>${esc(g.first_name)} ${esc(g.last_name)}</b>: ${g.free_claimed ? 'free bucket already claimed today. Any more are charged at the normal price.' : `free ${esc(freeP.name)} today (one per member per day). <label class="chk" style="display:inline-flex"><input type="checkbox" class="gfree" data-i="${W.golfers.indexOf(g)}" ${g.skip_free ? '' : 'checked'}> give it</label>`}</div>`).join('') : ''}
     ${EXTRA.length ? `<h3>Guest type <span class="mut">— automatic from their details; change it for seniors, PGA members and so on</span></h3>${W.golfers.map((g, i) => g.member_ok ? '' : `<div class="row" style="align-items:end"><div><label>${esc(g.first_name)} ${esc(g.last_name)}</label><select class="gty" data-i="${i}"><option value="">Automatic: ${esc(CATN[autoCat(g)])}</option>${EXTRA.map(t => `<option value="${t.code}" ${g.rate_cat === t.code ? 'selected' : ''}>${esc(t.label)}</option>`).join('')}</select></div>${EXTRA.find(t => t.code === g.rate_cat && +t.proof) ? `<div><label class="chk"><input type="checkbox" class="gpf" data-i="${i}" ${g.proof_checked ? 'checked' : ''}> I have seen their ${esc(CATN[g.rate_cat])} card or ID</label></div>` : '<div></div>'}</div>`).join('')}` : ''}
     <label>Bag number(s)</label><input id="bags" placeholder="e.g. 12, 14" value="${esc(W.bags)}">
     <div class="row"><div><label>Holes</label><select id="holes"><option>18</option><option ${W.holes === 9 ? 'selected' : ''}>9</option></select></div>
@@ -450,6 +452,7 @@ async function assetStep() {
   };
   total();
   document.querySelectorAll('select.gty').forEach(sel => sel.onchange = () => { const g = W.golfers[+sel.dataset.i]; g.rate_cat = sel.value || undefined; g.proof_checked = false; keep(); assetStepRender(); });
+  document.querySelectorAll('input.gfree').forEach(cb => cb.onchange = () => { W.golfers[+cb.dataset.i].skip_free = !cb.checked; });
   document.querySelectorAll('input.gpf').forEach(cb => cb.onchange = () => { W.golfers[+cb.dataset.i].proof_checked = cb.checked; });
   document.querySelectorAll('.tile').forEach(t => t.onclick = e => {
     if (t.dataset.k === 'range') { const id = +t.dataset.id; W.range[id] = e.target.closest('[data-rm]') ? Math.max(0, rq(id) - 1) : Math.min(20, rq(id) + 1); keep(); return assetStepRender(); }
@@ -480,7 +483,7 @@ async function assetStep() {
       const cn = W.assets.find(a => a.id === W.cart)?.name, kn = W.assets.find(a => a.id === W.clubs)?.name;
       const extra = W.items.map(id => W.assets.find(a => a.id === id)?.name).filter(Boolean).join(', ');
       view(`<div class="card done"><div class="tick">✓</div><h2>Checked in</h2><p style="font-size:24px;margin:0"><b>${esc(W.golfers[0].first_name)} ${esc(W.golfers[0].last_name)}</b></p>
-        <div class="cartno">${cn ? '🛺 ' + esc(cn) : 'Walking'}</div><p style="font-size:20px;margin:0">${kn ? '🏌 ' + esc(kn) : 'Own clubs'}</p>${extra ? `<p style="font-size:18px;margin:6px 0 0">${esc(extra)}</p>` : ''}${W.bags ? `<p class="mut" style="margin:6px 0 0">Bag ${esc(W.bags)}</p>` : ''}<p class="mut">${W.fee === 'member' ? 'Verified member: nothing to pay. ' : ''}${+r.green_total > 0 ? `Green fees ${money(r.green_total)} · ` : ''}Hire ${money(r.hire_fee)}${+r.range_total > 0 ? ' · Range balls ' + money(r.range_total) : ''}</p>${+r.green_total + +r.hire_fee + +(r.range_total || 0) > 0 ? `<p style="font-size:22px;margin:4px 0"><b>Total ${W.fee === 'room' ? 'charged to room' : 'paid'} ${money(+r.green_total + +r.hire_fee + +(r.range_total || 0))}</b></p>` : ''}${+r.range_total > 0 ? '<p style="font-size:18px;margin:6px 0 0">🎯 Range balls: the golf attendant has been alerted.</p>' : ''}${r.emailing ? '<p class="mut">📧 A copy of the signed agreement is being emailed.</p>' : ''}${r.offline ? '<div class="alert" style="text-align:left;margin-top:12px">📶 <b>Saved on this tablet.</b> There is no connection right now, so this check-in will be sent automatically when it returns. The amounts shown are from the rate card on this tablet. Please keep the tablet switched on and in the app.</div>' : ''}</div><div class="bar"><button class="p" id="h">Done</button></div>`);
+        <div class="cartno">${cn ? '🛺 ' + esc(cn) : 'Walking'}</div><p style="font-size:20px;margin:0">${kn ? '🏌 ' + esc(kn) : 'Own clubs'}</p>${extra ? `<p style="font-size:18px;margin:6px 0 0">${esc(extra)}</p>` : ''}${W.bags ? `<p class="mut" style="margin:6px 0 0">Bag ${esc(W.bags)}</p>` : ''}<p class="mut">${W.fee === 'member' ? 'Verified member: nothing to pay. ' : ''}${+r.green_total > 0 ? `Green fees ${money(r.green_total)} · ` : ''}Hire ${money(r.hire_fee)}${+r.range_total > 0 ? ' · Range balls ' + money(r.range_total) : ''}</p>${+r.green_total + +r.hire_fee + +(r.range_total || 0) > 0 ? `<p style="font-size:22px;margin:4px 0"><b>Total ${W.fee === 'room' ? 'charged to room' : 'paid'} ${money(+r.green_total + +r.hire_fee + +(r.range_total || 0))}</b></p>` : ''}${+r.range_total > 0 || (r.free_buckets || []).length ? '<p style="font-size:18px;margin:6px 0 0">🎯 Range balls: the golf attendant has been alerted.</p>' : ''}${(r.free_buckets || []).length ? `<p style="font-size:18px;margin:6px 0 0">🎁 Free member bucket: ${r.free_buckets.map(esc).join(', ')}</p>` : ''}${r.emailing ? '<p class="mut">📧 A copy of the signed agreement is being emailed.</p>' : ''}${r.offline ? '<div class="alert" style="text-align:left;margin-top:12px">📶 <b>Saved on this tablet.</b> There is no connection right now, so this check-in will be sent automatically when it returns. The amounts shown are from the rate card on this tablet. Please keep the tablet switched on and in the app.</div>' : ''}</div><div class="bar"><button class="p" id="h">Done</button></div>`);
       $('#h').onclick = home;
     } catch (e) { $('#done').disabled = false; throw e; }
   });
@@ -1061,11 +1064,11 @@ async function ratesPane() {
 async function rangePane() {
   const { products } = await api('range/products');
   $('#pane').innerHTML = `<div class="card"><h2>Range balls · ${esc(courseName())}</h2>
-    <p class="mut">What guests can buy at check-in, e.g. Small bucket, Large bucket. When a guest checks in with range balls, the golf attendant gets an alert on their home screen with a sound, and taps <b>Issued</b> once the balls have been handed over. Prices are in ${CUR}.</p>
-    <table><tr><th>Name</th><th>Price</th><th></th></tr>${[...products, { name: '', price: '', active: 1 }].map(p => `<tr data-id="${p.id || ''}"><td><input class="n" value="${esc(p.name)}" placeholder="e.g. Large bucket (80 balls)"></td><td><input class="pr" type="number" min="0" step="0.5" value="${p.price}" style="width:100px"></td><td style="white-space:nowrap"><label><input class="ac" type="checkbox" ${+p.active ? 'checked' : ''}> Active</label> <button class="sv p">${p.id ? 'Save' : 'Add'}</button></td></tr>`).join('')}</table></div>`;
+    <p class="mut">What guests can buy at check-in, e.g. Small bucket, Large bucket. When a guest checks in with range balls, the golf attendant gets an alert on their home screen with a sound, and taps <b>Issued</b> once the balls have been handed over. Tick <b>Free for members</b> on one item and every verified member gets one of it free, once per day; any extra buckets are charged at the normal price. Prices are in ${CUR}.</p>
+    <table><tr><th>Name</th><th>Price</th><th></th></tr>${[...products, { name: '', price: '', active: 1 }].map(p => `<tr data-id="${p.id || ''}"><td><input class="n" value="${esc(p.name)}" placeholder="e.g. Large bucket (80 balls)"></td><td><input class="pr" type="number" min="0" step="0.5" value="${p.price}" style="width:100px"></td><td style="white-space:nowrap"><label><input class="ac" type="checkbox" ${+p.active ? 'checked' : ''}> Active</label> <label title="Verified members get one of these free, once a day"><input class="mf" type="checkbox" ${+p.member_free ? 'checked' : ''}> Free for members</label> <button class="sv p">${p.id ? 'Save' : 'Add'}</button></td></tr>`).join('')}</table></div>`;
   document.querySelectorAll('#pane button.sv').forEach(b => b.onclick = guard(async () => {
     const tr = b.closest('tr');
-    await api('range/products/save', { method: 'POST', body: { id: tr.dataset.id || undefined, name: $('.n', tr).value, price: $('.pr', tr).value, active: $('.ac', tr).checked } });
+    await api('range/products/save', { method: 'POST', body: { id: tr.dataset.id || undefined, name: $('.n', tr).value, price: $('.pr', tr).value, active: $('.ac', tr).checked, member_free: $('.mf', tr).checked } });
     toast('Saved'); rangePane();
   }));
 }

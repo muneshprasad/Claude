@@ -309,7 +309,8 @@ CREATE TABLE IF NOT EXISTS range_products (
   name VARCHAR(60) NOT NULL,
   price DECIMAL(8,2) NOT NULL DEFAULT 0,
   sort INT NOT NULL DEFAULT 0,
-  active TINYINT(1) NOT NULL DEFAULT 1
+  active TINYINT(1) NOT NULL DEFAULT 1,
+  member_free TINYINT(1) NOT NULL DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE IF NOT EXISTS range_orders (
   id INT AUTO_INCREMENT PRIMARY KEY,
@@ -319,10 +320,14 @@ CREATE TABLE IF NOT EXISTS range_orders (
   product_name VARCHAR(60) NOT NULL,
   qty INT NOT NULL DEFAULT 1,
   amount DECIMAL(8,2) NOT NULL DEFAULT 0,
+  free TINYINT(1) NOT NULL DEFAULT 0,
+  member_id INT NULL,
+  free_day DATE NULL,
   status ENUM('pending','issued') NOT NULL DEFAULT 'pending',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   issued_at DATETIME NULL,
   issued_by INT NULL,
   KEY k_pending (course_id, status),
+  UNIQUE KEY uq_free_claim (course_id, member_id, free_day),
   FOREIGN KEY (checkin_id) REFERENCES checkins(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -48,6 +48,13 @@ CREATE TABLE IF NOT EXISTS range_orders (
   FOREIGN KEY (checkin_id) REFERENCES checkins(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Free bucket for verified members: one product is flagged, and each member can claim it once per day.
+ALTER TABLE range_products ADD COLUMN member_free TINYINT(1) NOT NULL DEFAULT 0 AFTER active;
+ALTER TABLE range_orders ADD COLUMN free TINYINT(1) NOT NULL DEFAULT 0 AFTER amount;
+ALTER TABLE range_orders ADD COLUMN member_id INT NULL AFTER free;
+ALTER TABLE range_orders ADD COLUMN free_day DATE NULL AFTER member_id;
+ALTER TABLE range_orders ADD UNIQUE KEY uq_free_claim (course_id, member_id, free_day);
+
 -- The four existing categories for every course (each course admin can add more, e.g. Senior, PGA member, Junior).
 INSERT IGNORE INTO guest_types (course_id, code, label, proof, sort)
   SELECT c.id, t.code, t.label, 0, t.sort FROM courses c JOIN (

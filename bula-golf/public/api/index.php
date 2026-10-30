@@ -63,6 +63,7 @@ try {
         $m = norm_mobile((string)($_GET['mobile'] ?? ''));
         $no = clean($_GET['member_no'] ?? null, 40);
         $member = find_member(course_id($u), $no, $m); // this course's member list, by member number or mobile
+        if ($member) $member['free_claimed'] = q('SELECT 1 FROM range_orders WHERE course_id=? AND member_id=? AND free_day=?', [course_id($u), (int)$member['id'], date('Y-m-d')])->fetchColumn() ? 1 : 0; // their free bucket for today
         if (strlen($m) < 5) out(['guests' => [], 'member' => $member]);
         $rows = q('SELECT * FROM guests WHERE mobile=? ORDER BY last_visit DESC LIMIT 8', [$m])->fetchAll();
         foreach ($rows as &$g) {
@@ -269,7 +270,7 @@ try {
                 [$course, $holes, $fee, $payMethod, clean($b['tee_time'] ?? null, 5), $cartId, $clubsId, $hire, clean($b['notes'] ?? null, 500), clean($b['bags'] ?? null, 40), $terms, $u['id'], $clientRef]);
             $ciId = (int)$pdo->lastInsertId();
             foreach ($items as [$aid, $afee]) q('INSERT INTO checkin_items (checkin_id,asset_id,hire_fee) VALUES (?,?,?)', [$ciId, $aid, $afee]);
-            $mainId = 0; $allMembers = true; $mailJobs = []; // golfers who gave an email get a PDF copy of what they signed
+            $mainId = 0; $allMembers = true; $mailJobs = []; $freeFor = []; $freeGiven = []; // golfers who gave an email get a PDF copy of what they signed
             foreach ($golfers as $i => $g) {
                 $first = clean($g['first_name'] ?? null, 80); $last = clean($g['last_name'] ?? null, 80);
                 $mobile = norm_mobile((string)($g['mobile'] ?? ''));
@@ -307,6 +308,7 @@ try {
                 q('INSERT INTO checkin_golfers (checkin_id,guest_id,is_main,signature,signed_ip,guardian_name,guest_type,member_id,hotel,country,green_fee,rate_cat) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
                     [$ciId, $gid, $i === 0 ? 1 : 0, $g['signature'], ip(), $guardian, $f[5], $memberId, $f[2], $f[1], $greenFee, $rateCat]);
                 if ($f[0] && filter_var($f[0], FILTER_VALIDATE_EMAIL)) $mailJobs[(int)$pdo->lastInsertId()] = $f[0];
+                if ($memberId && empty($g['skip_free'])) $freeFor[$memberId] = "$first $last";
             }
             // range balls ordered with the check-in: priced from the course's products, then handed to the golf attendant to issue
             $rangeTotal = 0.0; $gname = trim(($golfers[0]['first_name'] ?? '') . ' ' . ($golfers[0]['last_name'] ?? ''));
@@ -316,6 +318,14 @@ try {
                 if (!$p) fail(422, 'Unknown range-ball option');
                 $amt = round((float)$p['price'] * $qty, 2); $rangeTotal += $amt;
                 q('INSERT INTO range_orders (course_id,checkin_id,guest_name,product_name,qty,amount) VALUES (?,?,?,?,?,?)', [$course, $ciId, mb_substr($gname, 0, 160), $p['name'], $qty, $amt]);
+            }
+            // a verified member's free bucket: one per member per day (the unique key makes a second claim impossible), extra buckets are paid above
+            if ($freeFor && ($fp = q('SELECT id, name FROM range_products WHERE course_id=? AND active=1 AND member_free=1 ORDER BY sort, id LIMIT 1', [$course])->fetch())) {
+                foreach ($freeFor as $mid => $mname) {
+                    $n = q('INSERT IGNORE INTO range_orders (course_id,checkin_id,guest_name,product_name,qty,amount,free,member_id,free_day) VALUES (?,?,?,?,1,0,1,?,?)',
+                           [$course, $ciId, mb_substr($mname, 0, 160), $fp['name'], $mid, date('Y-m-d')])->rowCount();
+                    if ($n) $freeGiven[] = $mname;
+                }
             }
             $hire = round($hire, 2);
             if ($payMethod && ($hire + $greenTotal + $rangeTotal) < 0.005 && $allMembers) $fee = 'member';
@@ -333,7 +343,7 @@ try {
                 foreach ($mailJobs as $cgId => $to) { try { send_signed_copy((int)$cgId, (string)$to); } catch (Throwable $e) { error_log('bulagolf mail: ' . $e->getMessage()); } }
             });
         }
-        out(['id' => $ciId, 'hire_fee' => $hire, 'green_total' => $greenTotal, 'range_total' => $rangeTotal, 'emailing' => $queued]);
+        out(['id' => $ciId, 'hire_fee' => $hire, 'green_total' => $greenTotal, 'range_total' => $rangeTotal, 'free_buckets' => $freeGiven, 'emailing' => $queued]);
     }
 
     case 'checkins/active': {
@@ -625,7 +635,7 @@ try {
     case 'rates/get': { // the course's green-fee rate card (not secret: the tablet shows guests what they will pay)
         $u = require_login();
         $cid = course_id($u);
-        out(['rates' => rates_for($cid), 'types' => array_values(guest_types_for($cid, ($_GET['all'] ?? '') !== '1')), 'range' => q('SELECT id, name, price FROM range_products WHERE course_id=? AND active=1 ORDER BY sort, id', [$cid])->fetchAll()]);
+        out(['rates' => rates_for($cid), 'types' => array_values(guest_types_for($cid, ($_GET['all'] ?? '') !== '1')), 'range' => q('SELECT id, name, price, member_free FROM range_products WHERE course_id=? AND active=1 ORDER BY sort, id', [$cid])->fetchAll()]);
     }
     case 'rates/save': {
         $u = require_course_admin();
@@ -660,7 +670,7 @@ try {
     }
     case 'range/products': { // admin list (including switched-off items)
         $u = require_course_admin();
-        out(['products' => q('SELECT id, name, price, active FROM range_products WHERE course_id=? ORDER BY sort, id', [course_id($u)])->fetchAll()]);
+        out(['products' => q('SELECT id, name, price, active, member_free FROM range_products WHERE course_id=? ORDER BY sort, id', [course_id($u)])->fetchAll()]);
     }
     case 'range/products/save': {
         $u = require_course_admin();
@@ -669,15 +679,21 @@ try {
         $price = is_numeric($b['price'] ?? null) ? round((float)$b['price'], 2) : fail(422, 'Enter a price');
         if ($price < 0 || $price > 10000) fail(422, 'Enter a price from 0 upwards');
         $act = isset($b['active']) && !$b['active'] ? 0 : 1;
-        if (!empty($b['id'])) q('UPDATE range_products SET name=?, price=?, active=? WHERE id=? AND course_id=?', [$name, $price, $act, (int)$b['id'], $cid]);
-        else q('INSERT INTO range_products (course_id,name,price,active,sort) VALUES (?,?,?,?,?)', [$cid, $name, $price, $act, (int)q('SELECT COALESCE(MAX(sort),0)+1 FROM range_products WHERE course_id=?', [$cid])->fetchColumn()]);
+        $free = empty($b['member_free']) ? 0 : 1; // the one product verified members get free, once a day
+        if (!empty($b['id'])) {
+            if ($free) q('UPDATE range_products SET member_free=0 WHERE course_id=? AND id<>?', [$cid, (int)$b['id']]);
+            q('UPDATE range_products SET name=?, price=?, active=?, member_free=? WHERE id=? AND course_id=?', [$name, $price, $act, $free, (int)$b['id'], $cid]);
+        } else {
+            if ($free) q('UPDATE range_products SET member_free=0 WHERE course_id=?', [$cid]);
+            q('INSERT INTO range_products (course_id,name,price,active,sort,member_free) VALUES (?,?,?,?,?,?)', [$cid, $name, $price, $act, (int)q('SELECT COALESCE(MAX(sort),0)+1 FROM range_products WHERE course_id=?', [$cid])->fetchColumn(), $free]);
+        }
         audit($u['id'], 'range_product', $name);
         out(['ok' => true]);
     }
     case 'range/pending': { // the golf attendant's alert list: paid range-ball orders still to be issued
         $u = require_perm('range');
         $cid = course_id($u);
-        out(['orders' => q("SELECT id, checkin_id, guest_name, product_name, qty, created_at FROM range_orders WHERE course_id=? AND status='pending' ORDER BY id", [$cid])->fetchAll(), 'now' => date('Y-m-d H:i:s')]);
+        out(['orders' => q("SELECT id, checkin_id, guest_name, product_name, qty, free, created_at FROM range_orders WHERE course_id=? AND status='pending' ORDER BY id", [$cid])->fetchAll(), 'now' => date('Y-m-d H:i:s')]);
     }
     case 'range/issue': {
         $u = require_perm('range');
