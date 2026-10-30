@@ -82,12 +82,22 @@ function user(): ?array {
 /** Roles: admin (head office, or one course's admin), supervisor, staff. The old "manager" is an admin. */
 function norm_role(string $r): string { return $r === 'manager' ? 'admin' : $r; }
 
-/** What an admin can hand to supervisors and staff. Team and Access management stay with admins; Terms and Courses with head office. */
-const PERMS = ['dashboard', 'reports', 'history', 'fleet', 'members', 'export'];
+/**
+ * What an admin hands out per role. Team and Access management stay with admins; Terms and Courses with head office.
+ *   checkin  = check guests in     returns = return carts / clubs     range = issue range balls     today = see today's check-ins
+ * Roles: supervisor (everything by default), golf attendant (returns and range balls), staff (check-in only).
+ */
+const PERMS = ['checkin', 'returns', 'range', 'today', 'dashboard', 'reports', 'history', 'fleet', 'members', 'export'];
+const ROLE_DEFAULTS = [
+    'supervisor' => PERMS,
+    'attendant' => ['returns', 'range'],
+    'staff' => ['checkin'],
+];
 
-/** Allowed unless an admin switched it off: supervisors default to everything, staff to nothing extra (they always check guests in and out). */
+/** What each role may open at a course: the defaults above, adjusted by that course's admin under Settings > Access. */
 function access_matrix(int $course): array {
-    $m = ['supervisor' => array_fill_keys(PERMS, true), 'staff' => array_fill_keys(PERMS, false)];
+    $m = [];
+    foreach (ROLE_DEFAULTS as $role => $on) { $m[$role] = array_fill_keys(PERMS, false); foreach ($on as $p) $m[$role][$p] = true; }
     foreach (q('SELECT role, perm, allowed FROM role_perms WHERE course_id=?', [$course])->fetchAll() as $r) {
         if (isset($m[$r['role']][$r['perm']])) $m[$r['role']][$r['perm']] = (bool)(int)$r['allowed'];
     }
@@ -223,3 +233,26 @@ const STATUS_SQL = "CASE
     WHEN a.maintenance = 1 THEN 'maintenance'
     WHEN a.gps_status IS NOT NULL AND a.gps_status <> 'ready' THEN a.gps_status
     ELSE 'available' END";
+
+/** Payment status recorded at check-in (the system never takes money): everything is paid up front, or charged to the room where the course allows it. */
+const PAY_METHODS = ['paid', 'room'];
+
+const DEFAULT_GUEST_TYPES = [
+    ['member', 'Member', 0], ['resort', 'Resort / hotel guest', 0], ['resident', 'Fiji resident', 0], ['visitor', 'Visitor', 0],
+];
+
+/** The course's guest types as [code => ['code','label','proof','active']] (member / resort / resident / visitor always exist, plus whatever the admin adds). */
+function guest_types_for(int $course, bool $onlyActive = true): array {
+    $t = [];
+    try {
+        foreach (q('SELECT code, label, proof, active FROM guest_types WHERE course_id=? ORDER BY sort, id', [$course])->fetchAll() as $r)
+            if (!$onlyActive || (int)$r['active']) $t[$r['code']] = ['code' => $r['code'], 'label' => $r['label'], 'proof' => (int)$r['proof'], 'active' => (int)$r['active']];
+    } catch (Throwable $e) { /* guest_types not created yet */ }
+    if (!$t) foreach (DEFAULT_GUEST_TYPES as [$c, $l, $p]) $t[$c] = ['code' => $c, 'label' => $l, 'proof' => $p, 'active' => 1];
+    return $t;
+}
+
+/** Price of a club set for the round length (a 9-hole price when the admin set one). */
+function club_fee(array $asset, int $holes): float {
+    return $holes === 9 && ($asset['fee9'] ?? null) !== null && $asset['fee9'] !== '' ? (float)$asset['fee9'] : (float)$asset['fee'];
+}

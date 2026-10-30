@@ -82,7 +82,7 @@ function report_run(string $type, int $cid, string $from, string $to, string $sc
     }
 
     if ($type === 'cashup') {
-        $due = '(c.hire_fee + c.green_total)'; // everything owed on a check-in: green fees plus hire
+        $due = '(c.hire_fee + c.green_total + c.range_total)'; // everything owed on a check-in: green fees plus hire
         $rows = q("SELECT DATE(c.checked_in_at) d, COUNT(*) rounds, SUM($golfers) golfers, SUM(c.green_total) green, SUM(c.hire_fee) hire, SUM($due) due,
                    SUM(CASE WHEN c.fee_status='paid' THEN $due ELSE 0 END) paid, SUM(CASE WHEN c.fee_status='room' THEN $due ELSE 0 END) room,
                    SUM(CASE WHEN c.fee_status='unpaid' THEN $due ELSE 0 END) unpaid, SUM(c.fee_status='member') member_rounds
@@ -108,6 +108,9 @@ function report_run(string $type, int $cid, string $from, string $to, string $sc
         $names = ['member' => 'Members', 'resort' => 'Resort / hotel guests', 'resident' => 'Fiji residents', 'visitor' => 'Other visitors', 'unpriced' => 'Earlier check-ins (before the rate card)'];
         $rows = q("SELECT COALESCE(cg.rate_cat, 'unpriced') cat, c.holes, COUNT(*) n, SUM(cg.green_fee) amt FROM checkin_golfers cg JOIN checkins c ON c.id=cg.checkin_id
                    WHERE $W GROUP BY COALESCE(cg.rate_cat, 'unpriced'), c.holes", $P)->fetchAll();
+        $unp = $names['unpriced']; unset($names['unpriced']); // the course's own guest types (senior, PGA member...) join the standard four
+        foreach (q('SELECT code, MIN(label) l FROM guest_types GROUP BY code')->fetchAll() as $t) if (!isset($names[$t['code']])) $names[$t['code']] = $t['l'];
+        $names['unpriced'] = $unp;
         $by = []; foreach ($rows as $r) $by[$r['cat']][(int)$r['holes']] = [(int)$r['n'], (float)$r['amt']];
         $out = []; $gn = 0; $ga = 0.0;
         foreach ($names as $k => $label) foreach ([18, 9] as $h) {
@@ -217,7 +220,7 @@ function report_run(string $type, int $cid, string $from, string $to, string $sc
     }
 
     if ($type === 'trends') {
-        $tr = q("SELECT DATE_FORMAT(c.checked_in_at, '%Y-%m') ym, COUNT(*) rounds, SUM($golfers) golfers, SUM(c.hire_fee + c.green_total) hire, SUM(c.fee_status='member') member_rounds,
+        $tr = q("SELECT DATE_FORMAT(c.checked_in_at, '%Y-%m') ym, COUNT(*) rounds, SUM($golfers) golfers, SUM(c.hire_fee + c.green_total + c.range_total) hire, SUM(c.fee_status='member') member_rounds,
                  SUM(CASE WHEN cg.country IS NOT NULL AND cg.country<>'' AND NOT ($local) THEN 1 ELSE 0 END) overseas
                  FROM checkins c JOIN guests g ON g.id=c.main_guest_id JOIN checkin_golfers cg ON cg.checkin_id=c.id AND cg.is_main=1 WHERE c.course_id=? AND c.checked_in_at >= DATE_FORMAT(CURDATE() - INTERVAL 11 MONTH, '%Y-%m-01')
                  GROUP BY ym ORDER BY ym", [$cid])->fetchAll();

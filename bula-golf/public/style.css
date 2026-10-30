@@ -321,3 +321,10 @@ tr.click td{cursor:pointer}
 /* offline status pill */
 #qbar{position:fixed;left:12px;bottom:92px;z-index:25;min-height:0;padding:8px 16px;border-radius:999px;background:var(--gold2);color:var(--ink);border:1.5px solid var(--gold);font-size:14px;font-weight:700;box-shadow:0 6px 20px #0004}
 #qbar.bad{background:var(--warn2);border-color:var(--warn);color:var(--warn)}
+
+/* range-ball alert for the golf attendant */
+.rangealert{border:2px solid var(--gold);background:var(--gold2);border-radius:16px;padding:14px;animation:rpulse 1.6s ease-in-out infinite}
+.rorder{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-top:1px solid var(--line)}
+.rorder:first-of-type{border-top:0}
+@keyframes rpulse{50%{box-shadow:0 0 0 6px var(--gold2)}}
+@media (prefers-reduced-motion:reduce){.rangealert{animation:none}}

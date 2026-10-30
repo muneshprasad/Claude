@@ -97,7 +97,7 @@ try {
     case 'assets': {
         $u = require_login();
         $showAll = ($_GET['all'] ?? '') === '1';
-        $rows = q('SELECT a.id,a.kind,a.name,a.description,a.fee,a.sort_order,a.maintenance,a.active,a.gps_unit_id,a.gps_status,a.gps_battery,a.gps_lat,a.gps_lng,a.gps_seen, ' . STATUS_SQL . ' AS status
+        $rows = q('SELECT a.id,a.kind,a.name,a.description,a.fee,a.fee9,a.sort_order,a.maintenance,a.active,a.gps_unit_id,a.gps_status,a.gps_battery,a.gps_lat,a.gps_lng,a.gps_seen, ' . STATUS_SQL . ' AS status
                    FROM assets a WHERE a.course_id=? ' . ($showAll ? '' : 'AND a.active=1 ') . 'ORDER BY a.kind, a.sort_order, a.name', [course_id($u)])->fetchAll();
         out(['assets' => $rows]);
     }
@@ -107,13 +107,14 @@ try {
         $kind = in_array($b['kind'] ?? '', ['cart', 'clubs', 'shoes', 'racquet'], true) ? $b['kind'] : fail(422, 'Bad kind');
         $name = clean($b['name'] ?? null, 80) ?? fail(422, 'Name required');
         $vals = [$kind, $name, clean($b['description'] ?? null), $kind === 'cart' ? 0.0 : max(0, (float)($b['fee'] ?? 0)), (int)($b['sort_order'] ?? 0),
-                 empty($b['maintenance']) ? 0 : 1, empty($b['active']) && isset($b['active']) ? 0 : 1, clean($b['gps_unit_id'] ?? null, 80)];
+                 empty($b['maintenance']) ? 0 : 1, empty($b['active']) && isset($b['active']) ? 0 : 1, clean($b['gps_unit_id'] ?? null, 80),
+                 $kind === 'clubs' && isset($b['fee9']) && $b['fee9'] !== '' && is_numeric($b['fee9']) ? max(0, (float)$b['fee9']) : null];
         $course = course_id($u);
         require_hire_kind($course, $kind);
         if (!empty($b['id'])) {
-            q('UPDATE assets SET kind=?,name=?,description=?,fee=?,sort_order=?,maintenance=?,active=?,gps_unit_id=? WHERE id=? AND course_id=?', [...$vals, (int)$b['id'], $course]);
+            q('UPDATE assets SET kind=?,name=?,description=?,fee=?,sort_order=?,maintenance=?,active=?,gps_unit_id=?,fee9=? WHERE id=? AND course_id=?', [...$vals, (int)$b['id'], $course]);
         } else {
-            q('INSERT INTO assets (kind,name,description,fee,sort_order,maintenance,active,gps_unit_id,course_id) VALUES (?,?,?,?,?,?,?,?,?)', [...$vals, $course]);
+            q('INSERT INTO assets (kind,name,description,fee,sort_order,maintenance,active,gps_unit_id,fee9,course_id) VALUES (?,?,?,?,?,?,?,?,?,?)', [...$vals, $course]);
         }
         audit($u['id'], 'asset_save', "$kind $name");
         out(['ok' => true]);
@@ -220,12 +221,13 @@ try {
 
     // ---------- check-ins ----------
     case 'checkins/create': {
-        $u = require_login();
+        $u = require_perm('checkin');
         $b = body();
         $golfers = $b['golfers'] ?? [];
         if (!is_array($golfers) || !$golfers || count($golfers) > 8) fail(422, 'Add 1 to 8 golfers');
         $holes = (int)($b['holes'] ?? 18) === 9 ? 9 : 18;
-        $fee = in_array($b['fee_status'] ?? '', ['paid', 'room', 'unpaid', 'member'], true) ? $b['fee_status'] : 'unpaid';
+        $payMethod = in_array($b['pay_method'] ?? '', PAY_METHODS, true) ? $b['pay_method'] : null; // everything is paid up front
+        $fee = $payMethod === 'room' ? 'room' : ($payMethod ? 'paid' : (in_array($b['fee_status'] ?? '', ['paid', 'room', 'unpaid', 'member'], true) ? $b['fee_status'] : 'unpaid')); // old tablets still send fee_status
         $cartId = !empty($b['cart_id']) ? (int)$b['cart_id'] : null;
         $clubsId = !empty($b['clubs_id']) ? (int)$b['clubs_id'] : null;
         $course = course_id($u);
@@ -236,10 +238,11 @@ try {
         // a check-in saved offline on the tablet and sent again (or sent twice) is only ever recorded once
         $clientRef = clean($b['client_ref'] ?? null, 40);
         if ($clientRef) {
-            $dupe = q('SELECT id, hire_fee, green_total FROM checkins WHERE client_ref=? AND course_id=?', [$clientRef, $course])->fetch();
-            if ($dupe) out(['id' => (int)$dupe['id'], 'hire_fee' => (float)$dupe['hire_fee'], 'green_total' => (float)$dupe['green_total'], 'emailing' => 0, 'duplicate' => true]);
+            $dupe = q('SELECT id, hire_fee, green_total, range_total FROM checkins WHERE client_ref=? AND course_id=?', [$clientRef, $course])->fetch();
+            if ($dupe) out(['id' => (int)$dupe['id'], 'hire_fee' => (float)$dupe['hire_fee'], 'green_total' => (float)$dupe['green_total'], 'range_total' => (float)$dupe['range_total'], 'emailing' => 0, 'duplicate' => true]);
         }
-        $rates = rates_for($course); $greenTotal = 0.0;
+        $rates = rates_for($course); $greenTotal = 0.0; $types = guest_types_for($course);
+        $rangeIn = is_array($b['range'] ?? null) ? array_slice($b['range'], 0, 6) : [];
 
         $pdo = db();
         $pdo->beginTransaction();
@@ -251,7 +254,7 @@ try {
                 $a = q('SELECT a.*, ' . STATUS_SQL . ' AS status FROM assets a WHERE a.id=? AND a.kind=? AND a.active=1 AND a.course_id=? FOR UPDATE', [$id, $kind, $course])->fetch();
                 if (!$a) fail(422, 'Unknown ' . $kind);
                 if ($a['status'] !== 'available') fail(409, "{$a['name']} is not available ({$a['status']})");
-                if ($kind !== 'cart') $hire += (float)$a['fee']; // a cart comes with the round: never charged
+                if ($kind === 'clubs') $hire += club_fee($a, $holes); elseif ($kind !== 'cart') $hire += (float)$a['fee']; // a cart comes with the round: never charged
             }
             $items = []; // rental shoes / tennis racquets
             foreach ($itemIds as $id) {
@@ -262,8 +265,8 @@ try {
                 $hire += (float)$a['fee'];
                 $items[] = [$id, (float)$a['fee']];
             }
-            $ci = q('INSERT INTO checkins (course_id,main_guest_id,holes,fee_status,tee_time,cart_id,clubs_id,hire_fee,notes,bags,terms_version,staff_id,client_ref) VALUES (?,NULL,?,?,?,?,?,?,?,?,?,?,?)',
-                [$course, $holes, $fee, clean($b['tee_time'] ?? null, 5), $cartId, $clubsId, $hire, clean($b['notes'] ?? null, 500), clean($b['bags'] ?? null, 40), $terms, $u['id'], $clientRef]);
+            $ci = q('INSERT INTO checkins (course_id,main_guest_id,holes,fee_status,pay_method,tee_time,cart_id,clubs_id,hire_fee,notes,bags,terms_version,staff_id,client_ref) VALUES (?,NULL,?,?,?,?,?,?,?,?,?,?,?,?)',
+                [$course, $holes, $fee, $payMethod, clean($b['tee_time'] ?? null, 5), $cartId, $clubsId, $hire, clean($b['notes'] ?? null, 500), clean($b['bags'] ?? null, 40), $terms, $u['id'], $clientRef]);
             $ciId = (int)$pdo->lastInsertId();
             foreach ($items as [$aid, $afee]) q('INSERT INTO checkin_items (checkin_id,asset_id,hire_fee) VALUES (?,?,?)', [$ciId, $aid, $afee]);
             $mainId = 0; $allMembers = true; $mailJobs = []; // golfers who gave an email get a PDF copy of what they signed
@@ -294,15 +297,31 @@ try {
                 }
                 if ($i === 0) $mainId = $gid;
                 // hotel and country are kept per check-in (the guest record only holds the latest), so reports stay true for past dates
-                $rateCat = rate_category((bool)$isMember, $f[2], $f[1]); // green fee from the course's rate card, decided here, never by the tablet
+                $rateCat = rate_category((bool)$isMember, $f[2], $f[1]);
+                $pick = (string)($g['rate_cat'] ?? ''); // staff may place a golfer in another guest type (senior, PGA member...); a type that needs proof needs the box ticked
+                if (!$isMember && $pick !== '' && $pick !== 'member' && isset($types[$pick])) {
+                    if ($types[$pick]['proof'] && empty($g['proof_checked'])) fail(422, "$first $last: confirm you have seen their {$types[$pick]['label']} card or ID");
+                    $rateCat = $pick;
+                } // green fee from the course's rate card, decided here, never by the tablet
                 $greenFee = (float)($rates[$holes][$rateCat] ?? 0.0); $greenTotal += $greenFee;
                 q('INSERT INTO checkin_golfers (checkin_id,guest_id,is_main,signature,signed_ip,guardian_name,guest_type,member_id,hotel,country,green_fee,rate_cat) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
                     [$ciId, $gid, $i === 0 ? 1 : 0, $g['signature'], ip(), $guardian, $f[5], $memberId, $f[2], $f[1], $greenFee, $rateCat]);
                 if ($f[0] && filter_var($f[0], FILTER_VALIDATE_EMAIL)) $mailJobs[(int)$pdo->lastInsertId()] = $f[0];
             }
+            // range balls ordered with the check-in: priced from the course's products, then handed to the golf attendant to issue
+            $rangeTotal = 0.0; $gname = trim(($golfers[0]['first_name'] ?? '') . ' ' . ($golfers[0]['last_name'] ?? ''));
+            foreach ($rangeIn as $ri) {
+                $qty = max(1, min(20, (int)($ri['qty'] ?? 1)));
+                $p = q('SELECT name, price FROM range_products WHERE id=? AND course_id=? AND active=1', [(int)($ri['id'] ?? 0), $course])->fetch();
+                if (!$p) fail(422, 'Unknown range-ball option');
+                $amt = round((float)$p['price'] * $qty, 2); $rangeTotal += $amt;
+                q('INSERT INTO range_orders (course_id,checkin_id,guest_name,product_name,qty,amount) VALUES (?,?,?,?,?,?)', [$course, $ciId, mb_substr($gname, 0, 160), $p['name'], $qty, $amt]);
+            }
+            $hire = round($hire, 2);
+            if ($payMethod && ($hire + $greenTotal + $rangeTotal) < 0.005 && $allMembers) $fee = 'member';
             if ($fee === 'member' && !$allMembers) fail(422, 'No green fee needs every golfer to be a verified, current member with their card or ID seen');
-            if ($fee === 'member' && ($hire + $greenTotal) > 0.004) fail(422, 'Member (no fee) only applies when there is nothing to pay. Choose how the fees are being paid');
-            q('UPDATE checkins SET main_guest_id=?, green_total=? WHERE id=?', [$mainId, $greenTotal, $ciId]);
+            if ($fee === 'member' && ($hire + $greenTotal + $rangeTotal) > 0.004) fail(422, 'Member (no fee) only applies when there is nothing to pay. Choose how the fees are being paid');
+            q('UPDATE checkins SET main_guest_id=?, green_total=?, range_total=?, fee_status=?, hire_fee=? WHERE id=?', [$mainId, $greenTotal, $rangeTotal, $fee, $hire, $ciId]);
             $pdo->commit();
         } catch (Throwable $e) { if ($pdo->inTransaction()) $pdo->rollBack(); throw $e; }
         audit($u['id'], 'checkin', "id $ciId");
@@ -314,7 +333,7 @@ try {
                 foreach ($mailJobs as $cgId => $to) { try { send_signed_copy((int)$cgId, (string)$to); } catch (Throwable $e) { error_log('bulagolf mail: ' . $e->getMessage()); } }
             });
         }
-        out(['id' => $ciId, 'hire_fee' => $hire, 'green_total' => $greenTotal, 'emailing' => $queued]);
+        out(['id' => $ciId, 'hire_fee' => $hire, 'green_total' => $greenTotal, 'range_total' => $rangeTotal, 'emailing' => $queued]);
     }
 
     case 'checkins/active': {
@@ -325,7 +344,8 @@ try {
     case 'checkins/list': {
         $u = require_login();
         $d = preg_match('/^\d{4}-\d{2}-\d{2}$/', $_GET['date'] ?? '') ? $_GET['date'] : date('Y-m-d');
-        if (!can($u, 'history') && $d !== date('Y-m-d')) fail(403, 'Only today\'s check-ins are open to you. Ask your admin for history access.');
+        if (!can($u, 'history') && !can($u, 'today')) fail(403, 'Check-in lists are not open to you. Ask your admin.');
+        if (!can($u, 'history') && $d !== date('Y-m-d')) fail(403, "Only today's check-ins are open to you. Ask your admin for history access.");
         out(['checkins' => checkin_rows('c.course_id=? AND DATE(c.checked_in_at)=?', [course_id($u), $d])]);
     }
     case 'checkins/get': {
@@ -361,7 +381,7 @@ try {
         out(['ok' => true]);
     }
     case 'checkins/return': {
-        $u = require_login();
+        $u = require_perm('returns');
         $b = body();
         $id = (int)($b['id'] ?? 0);
         $cond = in_array($b['condition'] ?? '', ['ok', 'damaged', 'warning'], true) ? $b['condition'] : fail(422, 'Choose a condition');
@@ -422,8 +442,8 @@ try {
         $range = in_array((int)($_GET['range'] ?? 7), [1, 7, 30], true) ? (int)$_GET['range'] : 7;
         $since = "c.course_id=$cid AND c.checked_in_at >= (CURDATE() - INTERVAL " . ($range - 1) . " DAY)";
         $sum = fn(string $where) => q("SELECT COUNT(*) rounds, COALESCE(SUM((SELECT COUNT(*) FROM checkin_golfers x WHERE x.checkin_id=c.id)),0) golfers,
-                COALESCE(SUM(c.hire_fee + c.green_total),0) fees, COALESCE(SUM(c.green_total),0) green, COALESCE(SUM(c.hire_fee),0) hire, COALESCE(SUM(c.returned_at IS NULL),0) out_now,
-                COALESCE(SUM(CASE WHEN c.fee_status='unpaid' THEN c.hire_fee + c.green_total END),0) unpaid,
+                COALESCE(SUM(c.hire_fee + c.green_total + c.range_total),0) fees, COALESCE(SUM(c.green_total),0) green, COALESCE(SUM(c.hire_fee),0) hire, COALESCE(SUM(c.returned_at IS NULL),0) out_now,
+                COALESCE(SUM(CASE WHEN c.fee_status='unpaid' THEN c.hire_fee + c.green_total + c.range_total END),0) unpaid,
                 COALESCE(SUM(c.return_condition IN ('damaged','warning')),0) issues,
                 COALESCE(SUM((SELECT COUNT(*) FROM checkin_golfers m WHERE m.checkin_id=c.id AND m.is_main=1 AND m.guest_type='member')),0) members
                 FROM checkins c WHERE $where")->fetch();
@@ -435,7 +455,7 @@ try {
             'course_id' => $cid, 'range' => $range,
             'today' => $sum("c.course_id=$cid AND DATE(c.checked_in_at)=CURDATE()"),
             'period' => $sum($since),
-            'days' => q("SELECT DATE(c.checked_in_at) d, COUNT(*) n, SUM(c.hire_fee + c.green_total) fees FROM checkins c WHERE c.course_id=? AND c.checked_in_at >= (CURDATE() - INTERVAL 13 DAY) GROUP BY d ORDER BY d", [$cid])->fetchAll(),
+            'days' => q("SELECT DATE(c.checked_in_at) d, COUNT(*) n, SUM(c.hire_fee + c.green_total + c.range_total) fees FROM checkins c WHERE c.course_id=? AND c.checked_in_at >= (CURDATE() - INTERVAL 13 DAY) GROUP BY d ORDER BY d", [$cid])->fetchAll(),
             'hours' => q("SELECT HOUR(c.checked_in_at) h, COUNT(*) n FROM checkins c WHERE $since GROUP BY h ORDER BY h")->fetchAll(),
             'mix' => [
                 'holes' => q("SELECT c.holes k, COUNT(*) n FROM checkins c WHERE $since GROUP BY c.holes")->fetchAll(),
@@ -455,9 +475,9 @@ try {
         $rows = [];
         foreach (q('SELECT id,name FROM courses WHERE active=1 ORDER BY id')->fetchAll() as $c) {
             $cid = (int)$c['id'];
-            $t = q('SELECT COUNT(*) rounds, COALESCE(SUM(hire_fee + green_total),0) fees, COALESCE(SUM(returned_at IS NULL),0) out_now FROM checkins WHERE course_id=? AND DATE(checked_in_at)=CURDATE()', [$cid])->fetch();
-            $w = q('SELECT COUNT(*) rounds, COALESCE(SUM(hire_fee + green_total),0) fees FROM checkins WHERE course_id=? AND checked_in_at >= (CURDATE() - INTERVAL 6 DAY)', [$cid])->fetch();
-            $m = q('SELECT COUNT(*) rounds, COALESCE(SUM(hire_fee + green_total),0) fees FROM checkins WHERE course_id=? AND checked_in_at >= DATE_FORMAT(CURDATE(), "%Y-%m-01")', [$cid])->fetch();
+            $t = q('SELECT COUNT(*) rounds, COALESCE(SUM(hire_fee + green_total + range_total),0) fees, COALESCE(SUM(returned_at IS NULL),0) out_now FROM checkins WHERE course_id=? AND DATE(checked_in_at)=CURDATE()', [$cid])->fetch();
+            $w = q('SELECT COUNT(*) rounds, COALESCE(SUM(hire_fee + green_total + range_total),0) fees FROM checkins WHERE course_id=? AND checked_in_at >= (CURDATE() - INTERVAL 6 DAY)', [$cid])->fetch();
+            $m = q('SELECT COUNT(*) rounds, COALESCE(SUM(hire_fee + green_total + range_total),0) fees FROM checkins WHERE course_id=? AND checked_in_at >= DATE_FORMAT(CURDATE(), "%Y-%m-01")', [$cid])->fetch();
             $f = q("SELECT COUNT(*) total, COALESCE(SUM(status='available'),0) available, COALESCE(SUM(status='out'),0) out_now FROM (SELECT " . STATUS_SQL . " AS status FROM assets a WHERE a.course_id=? AND a.active=1 AND a.kind='cart') x", [$cid])->fetch();
             $iss = (int)q("SELECT COUNT(*) FROM checkins WHERE course_id=? AND return_condition IN ('damaged','warning') AND checked_in_at >= (CURDATE() - INTERVAL 6 DAY)", [$cid])->fetchColumn();
             $rows[] = ['id' => $cid, 'name' => $c['name'], 'today' => $t, 'week' => $w, 'month' => $m, 'carts' => $f, 'issues_week' => $iss,
@@ -604,19 +624,67 @@ try {
     }
     case 'rates/get': { // the course's green-fee rate card (not secret: the tablet shows guests what they will pay)
         $u = require_login();
-        out(['rates' => rates_for(course_id($u))]);
+        $cid = course_id($u);
+        out(['rates' => rates_for($cid), 'types' => array_values(guest_types_for($cid, ($_GET['all'] ?? '') !== '1')), 'range' => q('SELECT id, name, price FROM range_products WHERE course_id=? AND active=1 ORDER BY sort, id', [$cid])->fetchAll()]);
     }
     case 'rates/save': {
         $u = require_course_admin();
         $cid = course_id($u);
         $in = body()['rates'] ?? [];
-        foreach ([9, 18] as $h) foreach (['member', 'resort', 'resident', 'visitor'] as $cat) {
+        foreach ([9, 18] as $h) foreach (array_keys(guest_types_for($cid, false)) as $cat) {
             $amt = $in[$h][$cat] ?? 0;
             if (!is_numeric($amt) || (float)$amt < 0 || (float)$amt > 100000) fail(422, 'Rates must be amounts from 0 upwards');
             q('INSERT INTO rates (course_id, holes, category, amount) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE amount=VALUES(amount)', [$cid, $h, $cat, round((float)$amt, 2)]);
         }
         audit($u['id'], 'rates_save', "course $cid");
         out(['ok' => true]);
+    }
+    case 'types/save': { // the course's guest types: keep member/resort/resident/visitor, add or rename the rest (senior, PGA member...)
+        $u = require_course_admin();
+        $cid = course_id($u);
+        $list = body()['types'] ?? [];
+        if (!is_array($list) || count($list) > 20) fail(422, 'Too many guest types');
+        $core = array_column(DEFAULT_GUEST_TYPES, 1, 0); $seen = []; $n = 0;
+        foreach ($list as $t) {
+            $label = clean($t['label'] ?? null, 60); if (!$label) continue;
+            $code = isset($t['code']) && preg_match('/^[a-z0-9_]{1,30}$/', (string)$t['code']) ? $t['code'] : substr(trim(preg_replace('/[^a-z0-9]+/', '_', strtolower($label)), '_'), 0, 30);
+            if ($code === '' || isset($seen[$code])) continue;
+            $seen[$code] = 1;
+            $isCore = isset($core[$code]);
+            q('INSERT INTO guest_types (course_id,code,label,proof,sort,active) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE label=VALUES(label),proof=VALUES(proof),sort=VALUES(sort),active=VALUES(active)',
+              [$cid, $code, $label, $isCore || empty($t['proof']) ? 0 : 1, ++$n, $isCore || !isset($t['active']) || $t['active'] ? 1 : 0]);
+        }
+        foreach ($core as $c => $lbl) if (!isset($seen[$c])) q('INSERT IGNORE INTO guest_types (course_id,code,label,proof,sort,active) VALUES (?,?,?,0,?,1)', [$cid, $c, $lbl, ++$n]);
+        audit($u['id'], 'types_save', "course $cid");
+        out(['types' => array_values(guest_types_for($cid, false))]);
+    }
+    case 'range/products': { // admin list (including switched-off items)
+        $u = require_course_admin();
+        out(['products' => q('SELECT id, name, price, active FROM range_products WHERE course_id=? ORDER BY sort, id', [course_id($u)])->fetchAll()]);
+    }
+    case 'range/products/save': {
+        $u = require_course_admin();
+        $cid = course_id($u); $b = body();
+        $name = clean($b['name'] ?? null, 60) ?? fail(422, 'Name required');
+        $price = is_numeric($b['price'] ?? null) ? round((float)$b['price'], 2) : fail(422, 'Enter a price');
+        if ($price < 0 || $price > 10000) fail(422, 'Enter a price from 0 upwards');
+        $act = isset($b['active']) && !$b['active'] ? 0 : 1;
+        if (!empty($b['id'])) q('UPDATE range_products SET name=?, price=?, active=? WHERE id=? AND course_id=?', [$name, $price, $act, (int)$b['id'], $cid]);
+        else q('INSERT INTO range_products (course_id,name,price,active,sort) VALUES (?,?,?,?,?)', [$cid, $name, $price, $act, (int)q('SELECT COALESCE(MAX(sort),0)+1 FROM range_products WHERE course_id=?', [$cid])->fetchColumn()]);
+        audit($u['id'], 'range_product', $name);
+        out(['ok' => true]);
+    }
+    case 'range/pending': { // the golf attendant's alert list: paid range-ball orders still to be issued
+        $u = require_perm('range');
+        $cid = course_id($u);
+        out(['orders' => q("SELECT id, checkin_id, guest_name, product_name, qty, created_at FROM range_orders WHERE course_id=? AND status='pending' ORDER BY id", [$cid])->fetchAll(), 'now' => date('Y-m-d H:i:s')]);
+    }
+    case 'range/issue': {
+        $u = require_perm('range');
+        $cid = course_id($u); $id = (int)(body()['id'] ?? 0);
+        $n = q("UPDATE range_orders SET status='issued', issued_at=NOW(), issued_by=? WHERE id=? AND course_id=? AND status='pending'", [$u['id'], $id, $cid])->rowCount();
+        if ($n) audit($u['id'], 'range_issue', "order $id");
+        out(['ok' => true, 'already' => !$n]);
     }
     case 'course/timing': { // a course admin sets their own course's round times (minutes); head office edits whichever course is selected
         $u = require_course_admin();
@@ -684,7 +752,7 @@ try {
         $u = require_course_admin();
         $bound = user_course_id($u); // a course admin sees only their own course's supervisors and staff
         out(['users' => $bound
-            ? q("SELECT id,username,name,role,course_id,active FROM users WHERE course_id=? AND role IN ('staff','supervisor') ORDER BY role DESC, name", [$bound])->fetchAll()
+            ? q("SELECT id,username,name,role,course_id,active FROM users WHERE course_id=? AND role IN ('staff','supervisor','attendant') ORDER BY role DESC, name", [$bound])->fetchAll()
             : q('SELECT id,username,name,role,course_id,active FROM users ORDER BY name')->fetchAll()]);
     }
     case 'users/save': { // head office creates anyone; a course admin creates and manages supervisors and staff for their own course
@@ -695,13 +763,13 @@ try {
         if ($courseId !== null && !q('SELECT 1 FROM courses WHERE id=?', [$courseId])->fetch()) fail(422, 'Unknown course');
         $un = strtolower(trim((string)($b['username'] ?? '')));
         $name = clean($b['name'] ?? null, 100);
-        $role = in_array($b['role'] ?? '', ['staff', 'supervisor', 'admin'], true) ? $b['role'] : 'staff';
+        $role = in_array($b['role'] ?? '', ['staff', 'attendant', 'supervisor', 'admin'], true) ? $b['role'] : 'staff';
         if ($bound && $role === 'admin') fail(403, 'Only head office can create admins');
         if ($role !== 'admin' && $courseId === null) fail(422, 'Choose a course for this login');
         $pw = (string)($b['password'] ?? '');
         if (!preg_match('/^[a-z0-9._-]{3,50}$/', $un) || !$name) fail(422, 'Username (3+ letters/numbers) and name required');
         if (!empty($b['id'])) {
-            if ($bound && !q("SELECT 1 FROM users WHERE id=? AND course_id=? AND role IN ('staff','supervisor')", [(int)$b['id'], $bound])->fetch()) fail(403, 'You can only manage supervisors and staff for your own course');
+            if ($bound && !q("SELECT 1 FROM users WHERE id=? AND course_id=? AND role IN ('staff','supervisor','attendant')", [(int)$b['id'], $bound])->fetch()) fail(403, 'You can only manage supervisors and staff for your own course');
             if (q('SELECT 1 FROM users WHERE username=? AND id<>?', [$un, (int)$b['id']])->fetch()) fail(409, 'Username taken');
             if ((int)$b['id'] === $u['id'] && (isset($b['active']) && !$b['active'] || $role !== 'admin' || $courseId !== null)) fail(422, "You can't demote, disable or restrict yourself");
             q('UPDATE users SET username=?,name=?,role=?,course_id=?,active=? WHERE id=?', [$un, $name, $role, $courseId, empty($b['active']) && isset($b['active']) ? 0 : 1, (int)$b['id']]);
@@ -734,7 +802,7 @@ try {
         $u = require_course_admin();
         $cid = course_id($u);
         $m = body()['matrix'] ?? [];
-        foreach (['supervisor', 'staff'] as $role) foreach (PERMS as $p) {
+        foreach (array_keys(ROLE_DEFAULTS) as $role) foreach (PERMS as $p) {
             q('REPLACE INTO role_perms (course_id, role, perm, allowed) VALUES (?,?,?,?)', [$cid, $role, $p, empty($m[$role][$p]) ? 0 : 1]);
         }
         audit($u['id'], 'access_save', "course $cid");

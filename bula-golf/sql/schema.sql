@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS users (
   username VARCHAR(50) NOT NULL UNIQUE,
   name VARCHAR(100) NOT NULL,
   pass_hash VARCHAR(255) NOT NULL,
-  role ENUM('staff','supervisor','admin') NOT NULL DEFAULT 'staff',
+  role ENUM('staff','attendant','supervisor','admin') NOT NULL DEFAULT 'staff',
   course_id INT NULL,                     -- NULL = head office: can switch between all courses
   active TINYINT(1) NOT NULL DEFAULT 1,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS assets (
   name VARCHAR(80) NOT NULL,
   description VARCHAR(150) NULL,          -- e.g. "Men's RH"
   fee DECIMAL(8,2) NOT NULL DEFAULT 0,
+  fee9 DECIMAL(8,2) NULL,                 -- club-set price for 9 holes (blank = same as 18)
   sort_order INT NOT NULL DEFAULT 0,
   maintenance TINYINT(1) NOT NULL DEFAULT 0,
   active TINYINT(1) NOT NULL DEFAULT 1,
@@ -76,11 +77,13 @@ CREATE TABLE IF NOT EXISTS checkins (
   main_guest_id INT NULL,
   holes TINYINT NOT NULL DEFAULT 18,
   fee_status ENUM('paid','room','unpaid','member') NOT NULL DEFAULT 'unpaid',
+  pay_method VARCHAR(10) NULL,            -- paid | room: status only, the system takes no payment
   tee_time VARCHAR(5) NULL,
   cart_id INT NULL,
   clubs_id INT NULL,
   hire_fee DECIMAL(8,2) NOT NULL DEFAULT 0,
   green_total DECIMAL(8,2) NOT NULL DEFAULT 0,   -- green fees for the whole group, from the rate card
+  range_total DECIMAL(8,2) NOT NULL DEFAULT 0,   -- range balls ordered at check-in
   client_ref VARCHAR(40) NULL,            -- made up by the tablet so an offline check-in sent twice is recorded once
   notes VARCHAR(500) NULL,
   bags VARCHAR(40) NULL,                  -- bag number(s), e.g. "12, 14"
@@ -128,7 +131,7 @@ CREATE TABLE IF NOT EXISTS checkin_golfers (
   member_id INT NULL,                     -- matched row in members, when found
   hotel VARCHAR(150) NULL,                -- as at check-in (guest record holds only the latest)
   green_fee DECIMAL(8,2) NOT NULL DEFAULT 0,
-  rate_cat VARCHAR(20) NULL,              -- member | resort | resident | visitor
+  rate_cat VARCHAR(30) NULL,              -- member | resort | resident | visitor
   country VARCHAR(80) NULL,
   FOREIGN KEY (checkin_id) REFERENCES checkins(id) ON DELETE CASCADE,
   FOREIGN KEY (guest_id) REFERENCES guests(id)
@@ -187,7 +190,7 @@ CREATE TABLE IF NOT EXISTS rates (
   id INT AUTO_INCREMENT PRIMARY KEY,
   course_id INT NOT NULL,
   holes TINYINT NOT NULL,                              -- 9 or 18
-  category ENUM('member','resort','resident','visitor') NOT NULL,
+  category VARCHAR(30) NOT NULL,                  -- a guest_types.code
   amount DECIMAL(8,2) NOT NULL DEFAULT 0,
   UNIQUE KEY uq_rate (course_id, holes, category)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -245,7 +248,7 @@ CREATE TABLE IF NOT EXISTS terms (
 -- What each course's admin allows supervisors and staff to do (no rows = defaults: supervisors everything, staff nothing extra).
 CREATE TABLE IF NOT EXISTS role_perms (
   course_id INT NOT NULL,
-  role ENUM('supervisor','staff') NOT NULL,
+  role ENUM('supervisor','attendant','staff') NOT NULL,
   perm VARCHAR(30) NOT NULL,
   allowed TINYINT(1) NOT NULL,
   PRIMARY KEY (course_id, role, perm)
@@ -286,3 +289,40 @@ INSERT INTO terms (course_id, body) VALUES (1,
 -- Denarau Golf & Racquet Club wording, transcribed from their paper slip. Have it checked before relying on it.
 INSERT INTO terms (course_id, body) VALUES (2,
 'CART EQUIPMENT RENTAL\nI agree that I am liable and responsible for all rental equipment and the golf cart whilst in my care.\n\nGOLF CART RENTAL AGREEMENT\n1. I will return the golf cart immediately following the completion of 18 holes of play in the same condition as when I received it.\n2. No more than 2 people and 2 golf bags will occupy or be carried in the golf cart at any one time.\n3. Only persons holding a current drivers licence will be permitted to drive the golf cart.\n4. The Denarau Golf & Racquet Club will not be liable for any damages to the cart, personal injury or property damage from or through my negligence.\n5. I acknowledge that I will be liable for any damages as a result of my negligent operation of the golf cart.\n6. I agree to pay the Denarau Golf & Racquet Club the cost of any repairs considered reasonably necessary by Denarau Golf & Racquet Club to the cart whilst in my care within 14 days upon receipt of an account.\n7. I agree to pay Denarau Golf & Racquet Club for any damages caused to either rental shoes or clubs whilst in my care.\n8. No sharing of golf sets is allowed.\n\nTENNIS RENTAL AGREEMENT\n1. I will return racquet and/or shoes immediately following the completion of play in the same condition as was received. Reasonable wear and tear accepted.\n2. I acknowledge that I will be liable for any damages to either racquet and/or shoes through negligent use.\n3. I agree to pay the Denarau Golf & Racquet Club for damages exceeding reasonable wear and tear.');
+
+-- Guest types (rate categories), editable per course.
+CREATE TABLE IF NOT EXISTS guest_types (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  course_id INT NOT NULL,
+  code VARCHAR(30) NOT NULL,
+  label VARCHAR(60) NOT NULL,
+  proof TINYINT(1) NOT NULL DEFAULT 0,
+  sort INT NOT NULL DEFAULT 0,
+  active TINYINT(1) NOT NULL DEFAULT 1,
+  UNIQUE KEY uq_gt (course_id, code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Range balls: products and the orders a golf attendant issues.
+CREATE TABLE IF NOT EXISTS range_products (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  course_id INT NOT NULL,
+  name VARCHAR(60) NOT NULL,
+  price DECIMAL(8,2) NOT NULL DEFAULT 0,
+  sort INT NOT NULL DEFAULT 0,
+  active TINYINT(1) NOT NULL DEFAULT 1
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS range_orders (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  course_id INT NOT NULL,
+  checkin_id INT NULL,
+  guest_name VARCHAR(160) NULL,
+  product_name VARCHAR(60) NOT NULL,
+  qty INT NOT NULL DEFAULT 1,
+  amount DECIMAL(8,2) NOT NULL DEFAULT 0,
+  status ENUM('pending','issued') NOT NULL DEFAULT 'pending',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  issued_at DATETIME NULL,
+  issued_by INT NULL,
+  KEY k_pending (course_id, status),
+  FOREIGN KEY (checkin_id) REFERENCES checkins(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
